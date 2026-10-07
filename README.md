@@ -55,14 +55,23 @@ tapping anything.
 
 ### 1. Telegram
 
-```bash
-# In BotFather: /newbot, then /setprivacy -> Disable (so the bot can read
-# moderator replies in the group).
-export TELEGRAM_BOT_TOKEN='...'
+In BotFather: `/newbot`, then **`/setprivacy` → Disable**. Without that last
+step the bot cannot read moderator replies in the group, so ✏️ Edit silently
+does nothing.
 
-# Create a PRIVATE group, add the bot, send any message in it, then:
-node scripts/get-chat-id.mjs
-# -> use the negative group ID as MODERATOR_CHAT_ID
+Then create a **private** group, add the bot, and send any message in it.
+
+Store the token as a repository secret named `TELEGRAM_BOT_TOKEN`
+(Settings → Secrets and variables → Actions) and run the **Verify bot**
+workflow. It reports the bot's identity, its privacy setting, webhook state,
+and the chat IDs it can see — use the negative group ID as
+`MODERATOR_CHAT_ID`.
+
+Locally instead:
+
+```bash
+pip install -r tools/requirements.txt
+TELEGRAM_BOT_TOKEN='...' python tools/verify_bot.py
 ```
 
 ### 2. Database
@@ -81,13 +90,21 @@ npm run migrate
 empty Claude is instructed to say it has no ARDB-specific details — so drafts
 will be honest and nearly useless.
 
+Run the **Scrape knowledge base** workflow. It crawls www.ardb.com.kh and
+opens a pull request with the result and a review checklist — deliberately a
+pull request, not a direct commit, because an unreviewed knowledge file is how
+a navigation blob or a wrong interest rate reaches a customer.
+
+Locally instead:
+
 ```bash
-npm run scrape            # crawl www.ardb.com.kh
-npm run scrape -- --dry-run   # see what it would keep first
+pip install -r tools/requirements.txt
+python tools/scrape_knowledge.py --dry-run   # see what it would keep
+python tools/scrape_knowledge.py             # write it
 ```
 
-Review the diff before committing. See `knowledge/README.md` for the format and
-for hand-written entries, which survive a re-scrape.
+See `knowledge/README.md` for the format and for hand-written entries, which
+survive a re-scrape and override a scraped page of the same ID.
 
 ### 4. Secrets and deploy
 
@@ -139,6 +156,20 @@ src/
     ├── customer.ts      /start and questions
     ├── moderator.ts     Button taps and edited answers
     └── sla.ts           The scheduled sweep over stalled tickets
+
+tools/                   Python, run on GitHub Actions
+├── verify_bot.py        Token, privacy setting, webhook, visible chat IDs
+├── scrape_knowledge.py  Crawl -> knowledge file -> pull-request body
+├── ardb/
+│   ├── knowledge.py     The schema contract with src/core/knowledge.ts
+│   ├── scraper.py       Crawl filters and HTML extraction
+│   └── telegram.py      Read-only Bot API client
+└── tests/               91 tests, including a crawl against a fixture site
+
+.github/workflows/
+├── ci.yml               Typecheck, both test suites, Worker bundle
+├── verify-bot.yml        Manual bot verification
+└── scrape-knowledge.yml  Manual or monthly re-scrape, opens a PR
 ```
 
 `core/` imports nothing platform-specific, which is what makes a move off
@@ -174,6 +205,19 @@ is sent — which is what stops two moderators delivering two answers.
 configured group reach the moderator handlers, so anyone who can see a card is
 a moderator by construction. There is no allowlist to drift out of sync with
 the group's membership — add and remove staff in Telegram.
+
+### Why the tooling is Python on Actions
+
+The Worker never touches either host these tools do: `api.telegram.org` for
+verification, `ardb.com.kh` for the corpus. Neither belongs on a request path,
+both need unrestricted outbound network, and a GitHub runner has it. Keeping
+them out of the Worker also keeps the deployed bundle small and its egress
+surface to exactly two hosts: Telegram and the Claude API.
+
+`tools/ardb/knowledge.py` owns the schema contract with
+`src/core/knowledge.ts`. The Worker imports the JSON at build time, so a drift
+between them breaks deployment rather than failing at runtime — CI asserts the
+committed file parses, has unique IDs, and is sorted.
 
 ## Behaviour
 
@@ -246,11 +290,18 @@ This is scoped as an **internal demo**. Before real customers:
 ## Development
 
 ```bash
-npm run check          # typecheck + tests
+npm run check          # typecheck + Worker tests
 npm run test:watch
 npm run dev            # wrangler dev; delete the webhook first:
                        #   npm run set-webhook -- --delete
+
+pip install -r tools/requirements-dev.txt
+cd tools && python -m pytest
 ```
+
+CI runs both suites plus `wrangler deploy --dry-run`, which catches what
+typecheck and tests cannot: a bad `wrangler.jsonc`, a missing Node compat
+flag, a JSON import that does not bundle.
 
 A bot can have only one webhook, so local development and the deployed Worker
 cannot both receive updates at once.

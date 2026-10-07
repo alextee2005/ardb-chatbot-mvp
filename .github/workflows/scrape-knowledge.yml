@@ -1,0 +1,126 @@
+name: Scrape knowledge base
+
+# Opens a pull request rather than committing to a branch. The crawler is a
+# heuristic over a WordPress theme, and an unreviewed knowledge file is how a
+# navigation blob -- or a wrong interest rate -- reaches a customer.
+on:
+  workflow_dispatch:
+    inputs:
+      max_pages:
+        description: "Maximum pages to crawl"
+        required: false
+        default: "60"
+        type: string
+      ignore_robots:
+        description: "Crawl regardless of robots.txt (ARDB's own site only)"
+        required: false
+        default: false
+        type: boolean
+      dry_run:
+        description: "Report what would change without opening a pull request"
+        required: false
+        default: false
+        type: boolean
+  schedule:
+    # 03:17 UTC on the first of each month. An odd minute because schedules on
+    # the hour are the most delayed; monthly because published product terms
+    # change slowly.
+    - cron: "17 3 1 * *"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  # Two concurrent scrapes would race on the same branch.
+  group: scrape-knowledge
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: tools/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r tools/requirements.txt
+
+      - name: Scrape
+        id: scrape
+        working-directory: tools
+        env:
+          MAX_PAGES: ${{ inputs.max_pages || '60' }}
+          IGNORE_ROBOTS: ${{ inputs.ignore_robots }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          args=(
+            --max-pages "${MAX_PAGES}"
+            --summary-file "${RUNNER_TEMP}/summary.txt"
+            --pr-body-file "${RUNNER_TEMP}/pr-body.md"
+          )
+          if [ "${IGNORE_ROBOTS}" = "true" ]; then
+            args+=(--ignore-robots)
+          fi
+          if [ "${DRY_RUN}" = "true" ]; then
+            args+=(--dry-run)
+          fi
+          python scrape_knowledge.py "${args[@]}"
+
+      - name: Publish summary
+        if: always()
+        run: |
+          {
+            echo "## Knowledge base scrape"
+            echo
+            echo '```'
+            cat "${RUNNER_TEMP}/summary.txt" 2>/dev/null || echo "No summary produced."
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Check for changes
+        id: diff
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- knowledge/ardb-knowledge.json; then
+            echo "changed=false" >> "${GITHUB_OUTPUT}"
+            echo "The scrape produced no change to the knowledge base."
+          else
+            echo "changed=true" >> "${GITHUB_OUTPUT}"
+            git --no-pager diff --stat -- knowledge/ardb-knowledge.json
+          fi
+
+      - name: Open pull request
+        if: steps.diff.outputs.changed == 'true' && inputs.dry_run != true
+        env:
+          # The workflow's own token. Pull requests opened with it do not
+          # trigger other workflows, so CI will not run on this branch until a
+          # human reopens the pull request or re-runs CI by hand.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.scrape.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          branch="knowledge/scrape-${VERSION:-$(date -u +%Y%m%d-%H%M)}"
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "${branch}"
+          git add knowledge/ardb-knowledge.json
+          git commit -m "Refresh ARDB knowledge base (${VERSION:-unversioned})"
+          git push --set-upstream origin "${branch}"
+
+          # Body comes from a file written by the scraper: a heredoc here
+          # would carry the YAML indentation into the Markdown and render
+          # every line as a code block.
+          gh pr create \
+            --title "Refresh ARDB knowledge base (${VERSION:-unversioned})" \
+            --body-file "${RUNNER_TEMP}/pr-body.md" \
+            --base "${GITHUB_REF_NAME}" \
+            --head "${branch}"

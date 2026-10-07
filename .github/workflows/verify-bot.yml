@@ -1,0 +1,65 @@
+name: Verify bot
+
+# Runs on a GitHub runner, which has unrestricted outbound network access to
+# api.telegram.org. Manual, because it is a diagnostic rather than something
+# that should fire on a push.
+on:
+  workflow_dispatch:
+    inputs:
+      expect_webhook:
+        description: "Fail unless the webhook is registered at this exact URL (optional)"
+        required: false
+        type: string
+      require_privacy_disabled:
+        description: "Fail if group privacy is still enabled"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: tools/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r tools/requirements.txt
+
+      - name: Verify bot
+        working-directory: tools
+        env:
+          # Passed as an environment variable, never an argument: arguments
+          # appear in process listings and in some log surfaces.
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          EXPECT_WEBHOOK: ${{ inputs.expect_webhook }}
+          REQUIRE_PRIVACY_DISABLED: ${{ inputs.require_privacy_disabled }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ -n "${EXPECT_WEBHOOK}" ]; then
+            args+=(--expect-webhook "${EXPECT_WEBHOOK}")
+          fi
+          if [ "${REQUIRE_PRIVACY_DISABLED}" = "true" ]; then
+            args+=(--require-group-privacy-disabled)
+          fi
+          python verify_bot.py "${args[@]}" | tee "${RUNNER_TEMP}/verify.txt"
+
+      - name: Publish result to the run summary
+        if: always()
+        run: |
+          {
+            echo "## Bot verification"
+            echo
+            echo '```'
+            cat "${RUNNER_TEMP}/verify.txt" 2>/dev/null || echo "No output captured."
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"

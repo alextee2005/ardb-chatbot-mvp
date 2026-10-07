@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  worker:
+    name: Worker (TypeScript)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Bundle
+        # Catches what typecheck and tests cannot: a bad wrangler.jsonc, a
+        # missing Node compat flag, a JSON import that does not bundle.
+        run: npx wrangler deploy --dry-run --outdir /tmp/worker-build
+
+  tools:
+    name: Tools (Python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: tools/requirements-dev.txt
+
+      - run: pip install -r tools/requirements-dev.txt
+
+      - name: Test
+        working-directory: tools
+        run: python -m pytest
+
+      - name: Check the committed knowledge file parses
+        # The Worker imports this JSON at build time, so a malformed or
+        # off-schema file breaks deployment rather than failing at runtime.
+        working-directory: tools
+        run: |
+          python -c "
+          from pathlib import Path
+          from ardb import knowledge as kb
+
+          parsed = kb.load(Path('../knowledge/ardb-knowledge.json'))
+          ids = [entry.id for entry in parsed.entries]
+          print(f'{len(ids)} entries, version {parsed.version!r}')
+
+          assert len(ids) == len(set(ids)), 'duplicate entry IDs'
+          # Sorted order is what makes the rendered corpus byte-identical
+          # between requests, which the Worker's prompt cache depends on.
+          assert ids == sorted(ids), 'entries must be sorted by id'
+          "

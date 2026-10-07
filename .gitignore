@@ -6,3 +6,10 @@ dist/
 !.dev.vars.example
 *.log
 .DS_Store
+
+# Python tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/

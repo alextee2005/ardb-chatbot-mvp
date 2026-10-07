@@ -1,0 +1,5 @@
+# Pinned so a CI run is reproducible: an unpinned scraper that silently
+# changes its parser also silently changes the knowledge base.
+requests==2.32.5
+beautifulsoup4==4.14.2
+lxml==6.0.2
