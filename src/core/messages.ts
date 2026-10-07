@@ -45,6 +45,12 @@ export const CUSTOMER_MESSAGES = {
     "You have sent several questions in a short time. Please wait a moment and try again.",
   ),
 
+  /** Sent once when a ticket has gone unanswered for too long. */
+  stillWaiting: bilingual(
+    "សុំទោស សំណួររបស់អ្នកកំពុងចំណាយពេលយូរជាងធម្មតា។ បុគ្គលិករបស់យើងនឹងឆ្លើយតបទៅអ្នកវិញឱ្យបានឆាប់។ ប្រសិនបើប្រញាប់ សូមទាក់ទងសាខា ARDB ជិតបំផុត។",
+    "Sorry, your question is taking longer than usual. Our staff will reply to you as soon as they can. If it is urgent, please contact your nearest ARDB branch.",
+  ),
+
   /** The moderator declined to answer through the bot. */
   rejected: bilingual(
     "សុំទោស សំណួរនេះត្រូវការជំនួយពីបុគ្គលិករបស់យើងដោយផ្ទាល់។ សូមទាក់ទងសាខា ARDB ជិតបំផុត ឬទូរស័ព្ទមកយើង។",
@@ -69,4 +75,8 @@ export const MODERATOR_MESSAGES = {
     `${reference} rejected. The customer was asked to contact a branch.`,
   draftFailed:
     "Claude could not produce a draft for this question. Use ✏️ Edit to write the answer manually.",
+  nudge: (reference: string, waiting: string, nudgeNumber: number, maxNudges: number) =>
+    `⏰ ${reference} has been waiting ${waiting} with no answer. (Reminder ${nudgeNumber} of ${maxNudges}.)`,
+  customerWarned: (reference: string, waiting: string) =>
+    `${reference} has been waiting ${waiting}. The customer has been told it is taking longer than usual.`,
 } as const;

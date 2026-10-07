@@ -128,6 +128,7 @@ src/
 │   ├── knowledge.ts     Grounding corpus shape and rendering
 │   ├── draft.ts         System prompt and cache breakpoint placement
 │   ├── tickets.ts       Ticket lifecycle and moderator permissions
+│   ├── sla.ts           When an unanswered ticket needs chasing
 │   ├── callbacks.ts     Inline-button payload encoding
 │   └── moderator-card.ts  Card rendering and keyboards
 ├── adapters/            The outside world, one file per dependency
@@ -136,12 +137,13 @@ src/
 │   └── store.ts         Neon over HTTP
 └── handlers/
     ├── customer.ts      /start and questions
-    └── moderator.ts     Button taps and edited answers
+    ├── moderator.ts     Button taps and edited answers
+    └── sla.ts           The scheduled sweep over stalled tickets
 ```
 
 `core/` imports nothing platform-specific, which is what makes a move off
 Cloudflare a rewrite of `worker.ts` and the three adapters rather than of the
-business logic. The 48 tests cover `core/` only, and need no mocks.
+business logic. The 65 tests cover `core/` only, and need no mocks.
 
 ### Decisions worth knowing
 
@@ -184,8 +186,27 @@ the group's membership — add and remove staff in Telegram.
 | Two moderators tap ✅ at once | One delivery; the loser is told it is already answered |
 | Telegram retries a webhook | Deduplicated on `update_id` |
 | Unknown `/command` | Ignored silently |
+| Nobody answers for 10 min | Moderator group nudged, threaded under the card |
+| Still unanswered after 45 min | Customer told once it is taking longer; group told they were told |
 
-Tune the rate limit and model via `vars` in `wrangler.jsonc`.
+Tune the rate limit, model and SLA thresholds via `vars` in `wrangler.jsonc`.
+
+### Chasing unanswered tickets
+
+A Cron Trigger sweeps every five minutes. Candidates come from the database by
+age; the decision per ticket is `core/sla.ts`, and the nudge and warning guards
+live in the `UPDATE` statements, so two overlapping sweeps cannot double-send.
+
+| Var | Default | Meaning |
+|---|---|---|
+| `SLA_NUDGE_AFTER_MINUTES` | 10 | Silence before the group is nudged |
+| `SLA_NUDGE_REPEAT_MINUTES` | 30 | Minimum gap between repeat nudges |
+| `SLA_MAX_NUDGES` | 3 | Cap per ticket; a group nudged indefinitely mutes the bot |
+| `SLA_WARN_CUSTOMER_AFTER_MINUTES` | 45 | When the customer is told once that it is slow |
+
+A ticket that is `claimed` still counts as unanswered — a moderator may have
+tapped ✏️ Edit and then been called away. Past the nudge cap the ticket stays
+open and visible but stops pinging.
 
 ## Audit trail
 
@@ -214,8 +235,6 @@ This is scoped as an **internal demo**. Before real customers:
   numbers. They are stored in Neon in full and sent to the Anthropic API.
   There is no redaction and no retention policy — `ticket_events` grows
   forever.
-- **No SLA.** Nothing nudges moderators or warns the customer if a ticket sits
-  unanswered. A customer told "please give me some time" may wait indefinitely.
 - **No conversation memory.** Each question is drafted standalone, so a
   follow-up like "and what about the interest rate?" loses its referent.
 - **Moderator replies are trusted verbatim.** Whatever a moderator types is

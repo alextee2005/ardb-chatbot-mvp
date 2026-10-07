@@ -28,6 +28,7 @@ import {
   type CallbackQuery,
   type ModeratorContext,
 } from "./handlers/moderator.js";
+import { runSlaSweep } from "./handlers/sla.js";
 import type { TelegramMessage } from "./adapters/telegram.js";
 
 const knowledge = knowledgeJson as KnowledgeBase;
@@ -91,6 +92,56 @@ export default {
 
     ctx.waitUntil(processUpdate(update, config, ctx));
     return new Response("ok");
+  },
+
+  /**
+   * Cron Trigger: chase tickets nobody has answered.
+   *
+   * Errors are caught rather than thrown. A failed sweep must not retry in a
+   * tight loop, and the next scheduled run will pick up the same tickets
+   * anyway -- the nudge guards in SQL make a repeat harmless.
+   */
+  async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    let config;
+    try {
+      config = loadConfig(env);
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          level: "error",
+          msg: "SLA sweep skipped: configuration error",
+          detail: error instanceof ConfigError ? error.message : String(error),
+        }),
+      );
+      return;
+    }
+
+    ctx.waitUntil(
+      (async () => {
+        try {
+          const summary = await runSlaSweep({
+            telegram: new TelegramClient(config.telegramToken),
+            store: new Store(config.databaseUrl),
+            moderatorChatId: config.moderatorChatId,
+            policy: config.sla,
+          });
+
+          // Only worth a log line when the sweep actually did something; an
+          // idle queue sweeping every five minutes would drown the logs.
+          if (summary.nudged > 0 || summary.warned > 0) {
+            console.log(JSON.stringify({ level: "info", msg: "SLA sweep", ...summary }));
+          }
+        } catch (error) {
+          console.error(
+            JSON.stringify({
+              level: "error",
+              msg: "SLA sweep failed",
+              detail: error instanceof Error ? error.message : String(error),
+            }),
+          );
+        }
+      })(),
+    );
   },
 } satisfies ExportedHandler<Env>;
 

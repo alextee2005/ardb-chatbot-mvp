@@ -39,6 +39,11 @@ export interface Ticket {
   cardMessageId: number | null;
   /** message_id of the force-reply prompt, when a moderator is typing an edit. */
   promptMessageId: number | null;
+  /** How many times the moderator group has been nudged about this ticket. */
+  nudgeCount: number;
+  lastNudgedAt: Date | null;
+  /** When the customer was told it is taking longer than usual. Once only. */
+  customerWarnedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }

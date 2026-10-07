@@ -31,6 +31,11 @@ function toTicket(row: Row): Ticket {
     cardMessageId: row.card_message_id === null ? null : Number(row.card_message_id),
     promptMessageId:
       row.prompt_message_id === null ? null : Number(row.prompt_message_id),
+    nudgeCount: Number(row.nudge_count ?? 0),
+    lastNudgedAt: row.last_nudged_at ? new Date(String(row.last_nudged_at)) : null,
+    customerWarnedAt: row.customer_warned_at
+      ? new Date(String(row.customer_warned_at))
+      : null,
     createdAt: new Date(String(row.created_at)),
     updatedAt: new Date(String(row.updated_at)),
   };
@@ -220,6 +225,60 @@ export class Store {
       WHERE customer_user_id = ${customerUserId}
         AND status NOT IN ('sent','rejected')
       LIMIT 1
+    `;
+    return rows.length > 0;
+  }
+
+  /**
+   * Open tickets that could be late, oldest first.
+   *
+   * Deliberately loose -- it returns candidates by age and leaves the policy
+   * decision to `decideSlaActions`, so the rules live in one tested place
+   * rather than being half in SQL and half in TypeScript. `limit` bounds the
+   * work one sweep can do.
+   */
+  async findOpenTickets(olderThanMinutes: number, limit: number): Promise<Ticket[]> {
+    const rows = await this.sql`
+      SELECT * FROM tickets
+      WHERE status NOT IN ('sent','rejected')
+        AND created_at < now() - make_interval(mins => ${olderThanMinutes})
+      ORDER BY created_at ASC
+      LIMIT ${limit}
+    `;
+    return (rows as Row[]).map(toTicket);
+  }
+
+  /**
+   * Record a nudge, refusing if one has already been recorded within the
+   * repeat window. The guard is in the WHERE clause so two overlapping sweeps
+   * cannot both nudge the same ticket.
+   */
+  async markNudged(id: number, repeatMinutes: number): Promise<boolean> {
+    const rows = await this.sql`
+      UPDATE tickets
+      SET nudge_count = nudge_count + 1,
+          last_nudged_at = now(),
+          updated_at = now()
+      WHERE id = ${id}
+        AND status NOT IN ('sent','rejected')
+        AND (
+          last_nudged_at IS NULL
+          OR last_nudged_at < now() - make_interval(mins => ${repeatMinutes})
+        )
+      RETURNING id
+    `;
+    return rows.length > 0;
+  }
+
+  /** Record the customer warning, refusing if one was already sent. */
+  async markCustomerWarned(id: number): Promise<boolean> {
+    const rows = await this.sql`
+      UPDATE tickets
+      SET customer_warned_at = now(), updated_at = now()
+      WHERE id = ${id}
+        AND status NOT IN ('sent','rejected')
+        AND customer_warned_at IS NULL
+      RETURNING id
     `;
     return rows.length > 0;
   }

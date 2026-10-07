@@ -6,6 +6,13 @@
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
 
+  // Chases tickets nobody has answered. Every five minutes is finer than the
+  // 10-minute nudge threshold, so a late ticket is caught promptly rather
+  // than waiting out a whole extra interval.
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  },
+
   // Non-secret configuration. Secrets are set with `wrangler secret put` --
   // never add TELEGRAM_BOT_TOKEN, ANTHROPIC_API_KEY, DATABASE_URL,
   // MODERATOR_CHAT_ID or TELEGRAM_WEBHOOK_SECRET here.
@@ -13,6 +20,14 @@
     "CLAUDE_MODEL": "claude-opus-5-5",
     "CLAUDE_EFFORT": "low",
     "RATE_LIMIT_PER_MINUTE": "3",
-    "LOG_LEVEL": "info"
+    "LOG_LEVEL": "info",
+
+    // Minutes of silence before the moderator group is nudged, the minimum
+    // gap between repeat nudges, the cap on nudges per ticket, and the point
+    // at which the customer is told once that it is taking longer.
+    "SLA_NUDGE_AFTER_MINUTES": "10",
+    "SLA_NUDGE_REPEAT_MINUTES": "30",
+    "SLA_MAX_NUDGES": "3",
+    "SLA_WARN_CUSTOMER_AFTER_MINUTES": "45"
   }
 }

@@ -21,3 +21,10 @@ ANTHROPIC_API_KEY=
 # Neon connection string, e.g.
 # postgresql://user:pass@ep-xxx.ap-southeast-1.aws.neon.tech/ardb?sslmode=require
 DATABASE_URL=
+
+# Optional. SLA thresholds in minutes; the defaults in wrangler.jsonc apply
+# when these are absent or invalid.
+# SLA_NUDGE_AFTER_MINUTES=10
+# SLA_NUDGE_REPEAT_MINUTES=30
+# SLA_MAX_NUDGES=3
+# SLA_WARN_CUSTOMER_AFTER_MINUTES=45
