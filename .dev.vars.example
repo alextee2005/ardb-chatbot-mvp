@@ -1,0 +1,23 @@
+# Copy to `.dev.vars` for local `wrangler dev`. `.dev.vars` is gitignored.
+# In production set each of these with: wrangler secret put <NAME>
+
+# From BotFather. Rotate with /revoke if it has ever been pasted into a chat,
+# an issue, a log or a screenshot.
+TELEGRAM_BOT_TOKEN=
+
+# A random string you invent. Telegram echoes it back on every webhook call in
+# the X-Telegram-Bot-Api-Secret-Token header, which is how the Worker knows a
+# request really came from Telegram. Generate one with:
+#   openssl rand -hex 32
+TELEGRAM_WEBHOOK_SECRET=
+
+# The private moderator group's chat ID (negative number for groups, e.g.
+# -1001234567890). Run `npm run get-chat-id` to discover it.
+MODERATOR_CHAT_ID=
+
+# console.anthropic.com -> API keys
+ANTHROPIC_API_KEY=
+
+# Neon connection string, e.g.
+# postgresql://user:pass@ep-xxx.ap-southeast-1.aws.neon.tech/ardb?sslmode=require
+DATABASE_URL=

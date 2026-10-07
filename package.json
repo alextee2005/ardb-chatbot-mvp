@@ -1,0 +1,29 @@
+{
+  "name": "ardb-chatbot-mvp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Supervised Telegram support bot for the Agricultural and Rural Development Bank (ARDB)",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "scrape": "node scripts/scrape-ardb.mjs",
+    "migrate": "node scripts/migrate.mjs",
+    "set-webhook": "node scripts/set-webhook.mjs",
+    "check": "npm run typecheck && npm run test"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.131.0",
+    "@neondatabase/serverless": "^1.0.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261006.1",
+    "cheerio": "^1.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0",
+    "wrangler": "^4.0.0"
+  }
+}

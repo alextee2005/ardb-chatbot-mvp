@@ -1,0 +1,18 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "ardb-chatbot",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+
+  // Non-secret configuration. Secrets are set with `wrangler secret put` --
+  // never add TELEGRAM_BOT_TOKEN, ANTHROPIC_API_KEY, DATABASE_URL,
+  // MODERATOR_CHAT_ID or TELEGRAM_WEBHOOK_SECRET here.
+  "vars": {
+    "CLAUDE_MODEL": "claude-opus-5-5",
+    "CLAUDE_EFFORT": "low",
+    "RATE_LIMIT_PER_MINUTE": "3",
+    "LOG_LEVEL": "info"
+  }
+}
