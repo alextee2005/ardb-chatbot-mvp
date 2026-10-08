@@ -228,6 +228,30 @@ def main(argv: list[str] | None = None) -> int:
         print("\nDry run -- nothing written.")
         return 0
 
+    # Nothing changed on the site. Leave the committed file exactly as it is,
+    # timestamps included.
+    #
+    # Rewriting it would move `version` and `generatedAt` and nothing else,
+    # which looks like a change to `git diff` and so opens a pull request
+    # whose entire content is a newer timestamp on identical pages. A monthly
+    # scrape that found nothing would do that every month, and a reviewer who
+    # has dismissed three such pull requests will skim the fourth -- the one
+    # where a rate moved. The digest covers the entries alone precisely so
+    # this comparison is possible.
+    if existing.entries and existing.digest == result.digest:
+        print(
+            f"\nUnchanged: {_display_path(args.output)} already holds digest "
+            f"{result.digest}. ARDB's pages have not moved, so the archive is "
+            "left untouched and nothing needs reviewing."
+        )
+        if step_output := os.environ.get("GITHUB_OUTPUT"):
+            with open(step_output, "a", encoding="utf-8") as handle:
+                handle.write(f"version={existing.version}\n")
+                handle.write(f"entries={len(existing.entries)}\n")
+                handle.write(f"digest={existing.digest}\n")
+                handle.write("changed=false\n")
+        return 0
+
     args.output.parent.mkdir(parents=True, exist_ok=True)
     kb.dump(result, args.output)
     kb.append_history(
@@ -258,6 +282,7 @@ def main(argv: list[str] | None = None) -> int:
             handle.write(f"version={result.version}\n")
             handle.write(f"entries={len(result.entries)}\n")
             handle.write(f"digest={result.digest}\n")
+            handle.write("changed=true\n")
 
     return 0
 

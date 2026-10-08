@@ -18,10 +18,17 @@ from. Git versions the files; this is the readable index over that history, so
 answering "when did this rate last change, and which scrape introduced it?"
 does not mean checking out old commits.
 
-It records runs that *changed* something. A scrape that finds ARDB's pages
-untouched opens no pull request, so its line never reaches the default branch
-— a gap in the dates means nothing changed, not that nothing ran. The workflow
-run log is the record of every attempt.
+It records runs that *changed* something. Both stages compare content
+digests and leave the file untouched — timestamps and all — when the result
+matches what is already committed, so an unchanged run writes no file, adds no
+ledger line and opens no pull request. A gap in the dates means nothing
+changed, not that nothing ran; the workflow run log is the record of every
+attempt.
+
+That idempotence is deliberate. Without it a monthly scrape of untouched pages,
+and a rebuild after any restatement edit, would each open a pull request whose
+whole content is a newer timestamp — and a reviewer who has waved through three
+of those will skim the fourth, which is the one where a rate moved.
 
 ## Why two files
 

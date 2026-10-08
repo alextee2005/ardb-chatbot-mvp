@@ -425,3 +425,156 @@ class TestStageOneGuard:
         assert status == 2
         assert "Refusing to overwrite a corpus" in capsys.readouterr().err
         assert corpus.read_text(encoding="utf-8") == before
+
+
+class TestIdempotence:
+    """A run that changes nothing must write nothing.
+
+    Both stages stamp the file with a version and a timestamp, so rewriting
+    an unchanged file still produces a diff -- and a pull request whose whole
+    content is a newer timestamp. Stage 2 runs on every merged scrape and
+    every restatement edit, and stage 1 runs monthly whether or not ARDB
+    touched anything, so these would arrive steadily. Whoever has dismissed
+    three of them will skim the fourth, which is the one where a rate moved.
+    """
+
+    def test_a_second_build_leaves_the_file_byte_identical(self, tmp_path):
+        raw_path = tmp_path / "raw.json"
+        kb.dump(archive(), raw_path)
+        restatements = tmp_path / "restatements"
+        restatements.mkdir()
+        (restatements / "batch.py").write_text(
+            "ENGLISH = {'saving-deposit': ("
+            "'Savings deposit', "
+            "'The interest rate is 1.50% a year. The minimum deposit is 40,000 riel.'"
+            ")}\n",
+            encoding="utf-8",
+        )
+        out = tmp_path / "out.json"
+        history = tmp_path / "HISTORY.jsonl"
+        args = [
+            "--raw", str(raw_path),
+            "--corpus", str(out),
+            "--restatements", str(restatements),
+            "--history", str(history),
+        ]
+
+        assert build_corpus.main(args) == 0
+        first = out.read_bytes()
+        first_history = history.read_bytes()
+
+        assert build_corpus.main(args) == 0
+        assert out.read_bytes() == first
+        # And no ledger line for a run that did nothing.
+        assert history.read_bytes() == first_history
+
+    def test_a_changed_archive_still_rewrites(self, tmp_path):
+        raw_path = tmp_path / "raw.json"
+        kb.dump(archive(), raw_path)
+        restatements = tmp_path / "restatements"
+        restatements.mkdir()
+        (restatements / "batch.py").write_text("ENGLISH = {}\n", encoding="utf-8")
+        out = tmp_path / "out.json"
+        args = [
+            "--raw", str(raw_path),
+            "--corpus", str(out),
+            "--restatements", str(restatements),
+            "--history", str(tmp_path / "HISTORY.jsonl"),
+        ]
+
+        # Nothing restated is a hard failure, so give the archive one English
+        # page to make the build legitimate.
+        kb.dump(
+            archive(khmer_entry(id="en-page", language="en", content="Rates: 8%.")),
+            raw_path,
+        )
+        assert build_corpus.main(args) == 0
+        first = out.read_bytes()
+
+        kb.dump(
+            archive(khmer_entry(id="en-page", language="en", content="Rates: 9%.")),
+            raw_path,
+        )
+        assert build_corpus.main(args) == 0
+        assert out.read_bytes() != first
+        assert kb.load(out).built_from.digest == kb.load(raw_path).digest
+
+    def test_an_identical_corpus_from_a_different_archive_rewrites(self, tmp_path):
+        # ARDB changing only the *title* of a page whose body is restated
+        # leaves the corpus identical while moving the archive's digest. The
+        # rewrite is what keeps `--check` from reporting stale forever.
+        raw_path = tmp_path / "raw.json"
+        kb.dump(archive(), raw_path)
+        restatements = tmp_path / "restatements"
+        restatements.mkdir()
+        (restatements / "batch.py").write_text(
+            "ENGLISH = {'saving-deposit': ("
+            "'Savings deposit', "
+            "'The interest rate is 1.50% a year. The minimum deposit is 40,000 riel.'"
+            ")}\n",
+            encoding="utf-8",
+        )
+        out = tmp_path / "out.json"
+        args = [
+            "--raw", str(raw_path),
+            "--corpus", str(out),
+            "--restatements", str(restatements),
+            "--history", str(tmp_path / "HISTORY.jsonl"),
+        ]
+        assert build_corpus.main(args) == 0
+        before = kb.load(out)
+
+        retitled = archive(khmer_entry(title="ប្រាក់បញ្ញើសន្សំ (ថ្មី)"))
+        kb.dump(retitled, raw_path)
+        assert build_corpus.main(args) == 0
+
+        after = kb.load(out)
+        # Same corpus content, new provenance -- so the staleness check clears.
+        assert after.digest == before.digest
+        assert after.built_from.digest == retitled.digest
+        assert build_corpus.check(retitled, after) == 0
+
+    def test_a_second_scrape_of_unchanged_pages_leaves_the_archive_alone(
+        self, tmp_path, monkeypatch
+    ):
+        import scrape_knowledge
+        from ardb.scraper import ScrapeReport
+
+        pages = [khmer_entry()]
+        monkeypatch.setattr(
+            scrape_knowledge,
+            "crawl",
+            lambda *a, **k: (list(pages), ScrapeReport(visited=1, kept=1)),
+        )
+
+        out = tmp_path / "raw.json"
+        history = tmp_path / "HISTORY.jsonl"
+        args = ["--output", str(out), "--history", str(history)]
+
+        assert scrape_knowledge.main(args) == 0
+        first = out.read_bytes()
+        first_history = history.read_bytes()
+
+        assert scrape_knowledge.main(args) == 0
+        assert out.read_bytes() == first
+        assert history.read_bytes() == first_history
+
+    def test_a_scrape_that_found_a_change_does_rewrite(self, tmp_path, monkeypatch):
+        import scrape_knowledge
+        from ardb.scraper import ScrapeReport
+
+        pages = [khmer_entry()]
+        monkeypatch.setattr(
+            scrape_knowledge,
+            "crawl",
+            lambda *a, **k: (list(pages), ScrapeReport(visited=1, kept=1)),
+        )
+
+        out = tmp_path / "raw.json"
+        args = ["--output", str(out), "--history", str(tmp_path / "HISTORY.jsonl")]
+        assert scrape_knowledge.main(args) == 0
+        first = out.read_bytes()
+
+        pages[:] = [khmer_entry(content="អត្រាការប្រាក់ ២,០០% ក្នុងមួយឆ្នាំ។")]
+        assert scrape_knowledge.main(args) == 0
+        assert out.read_bytes() != first

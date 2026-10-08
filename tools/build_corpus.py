@@ -333,6 +333,37 @@ def main(argv: list[str] | None = None) -> int:
         print("\nDry run -- nothing written.")
         return 1 if (rejected or corpus.pending) else 0
 
+    # Same inputs, same output -- including the timestamp. A build whose only
+    # difference from the committed corpus is a newer `generatedAt` opens a
+    # pull request that changes nothing the bot reads, and teaches whoever
+    # reviews corpus pull requests that they are noise. Stage 2 runs on every
+    # merged scrape and on every restatement edit, so that would be often.
+    #
+    # Both halves have to match. An identical corpus built from a *different*
+    # archive still needs writing: ARDB changing only the title of a page
+    # whose body is restated leaves the corpus identical while moving the
+    # archive's digest, and without the rewrite `--check` would report the
+    # corpus stale forever.
+    existing = kb.load(args.corpus)
+    if (
+        existing.entries
+        and existing.digest == corpus.digest
+        and existing.built_from is not None
+        and existing.built_from.digest == raw.digest
+    ):
+        print(
+            f"\nUnchanged: {_display_path(args.corpus)} already holds digest "
+            f"{corpus.digest}, built from this same archive. Nothing written."
+        )
+        if step_output := os.environ.get("GITHUB_OUTPUT"):
+            with open(step_output, "a", encoding="utf-8") as handle:
+                handle.write(f"version={existing.version}\n")
+                handle.write(f"entries={len(existing.entries)}\n")
+                handle.write(f"english={existing.english_count}\n")
+                handle.write(f"pending={len(existing.pending)}\n")
+                handle.write("changed=false\n")
+        return 1 if (rejected or corpus.pending) else 0
+
     args.corpus.parent.mkdir(parents=True, exist_ok=True)
     kb.dump(corpus, args.corpus)
     kb.append_history(
@@ -359,6 +390,7 @@ def main(argv: list[str] | None = None) -> int:
             handle.write(f"entries={len(corpus.entries)}\n")
             handle.write(f"english={corpus.english_count}\n")
             handle.write(f"pending={len(corpus.pending)}\n")
+            handle.write("changed=true\n")
 
     return 1 if (rejected or corpus.pending) else 0
 
