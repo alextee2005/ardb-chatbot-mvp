@@ -280,12 +280,23 @@ not exist.
 
 ### Reading ARDB's numbers
 
-The source pages write figures in Khmer numerals with a comma for the decimal
-point and a full stop for thousands: `១,៥០%` is 1.50%, `១០០.០០០` is 100,000.
-Read with English conventions, a 4.00% deposit rate becomes **400%** — so the
-system prompt states the convention explicitly, tells Claude to convert to
-Arabic numerals when answering in English, and to decline rather than quote a
-figure that only makes sense under the other reading.
+The source pages write figures in Khmer numerals, and ARDB uses the comma
+**both** ways — so the separator alone cannot tell you which it is. What
+decides is the size of the group after it: one or two digits is a decimal
+fraction, exactly three is a thousands group.
+
+| Source | Comma/stop means | Value |
+|---|---|---|
+| `១,៥០%` | decimal point | 1.50% |
+| `៤០,០០០` riel | thousands | 40,000 |
+| `១០០.០០០` | thousands | 100,000 |
+
+Getting this wrong is not cosmetic in either direction: read a rate the wrong
+way and 4.00% becomes **400%**; read the savings minimum the wrong way and
+40,000 riel becomes **40**. Assuming the comma was always a decimal point did
+exactly that, until the real corpus showed both usages on the same site. The
+normalizer now decides per figure, and only regroups when the source itself
+grouped — so a year like `2019.08` is not turned into `2,019.08`.
 
 Rate tables are flattened out of HTML one row per line, cells joined by `" | "`
 (typically term, then USD rate, then riel rate). Cell-per-line would leave the

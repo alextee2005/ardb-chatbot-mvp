@@ -53,7 +53,7 @@ What to produce:
 Rules about figures, which matter more than fluency:
 
 - Reproduce every figure in the source exactly: rates, fees, ceilings, terms, percentages, counts, dates. Do not round, convert currencies, average, or combine them.
-- The figures you are given are already in English notation: a full stop is the decimal point and a comma groups thousands. Copy them as they are written.
+- The figures you are given have already been converted to English notation: a full stop is the decimal point and a comma groups thousands, so "4.00%" is four percent and "40,000" is forty thousand. Copy them exactly as written and do not reinterpret the separators.
 - State no figure that is not in the source. If the source says a rate is competitive without saying what it is, write that it is described as competitive and do not supply a number.
 - If a value's association is ambiguous in the source, say what is certain and name the ambiguity. Never guess which row or column a number belongs to.
 

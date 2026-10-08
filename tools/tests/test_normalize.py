@@ -62,6 +62,31 @@ class TestSeparatorConvention:
     def test_mixed_notation_resolves_comma_as_decimal(self):
         assert normalize_numbers("១.០០០,៥០") == "1,000.50"
 
+    @pytest.mark.parametrize(
+        "source,expected",
+        [
+            # The savings account minimum, written with a comma grouping
+            # thousands. Reading the comma as a decimal point made this 40
+            # riel instead of 40,000 -- a 1000x error on a real published
+            # figure, in the function written to prevent exactly that.
+            ("៤០,០០០", "40,000"),
+            ("៥,០០០", "5,000"),
+            ("១,០០០,០០០", "1,000,000"),
+        ],
+    )
+    def test_a_comma_can_also_group_thousands(self, source, expected):
+        assert normalize_numbers(source) == expected
+
+    def test_the_group_size_decides_what_a_comma_means(self):
+        # ARDB uses the comma both ways, so the separator alone cannot say.
+        # A one or two digit group is a fraction; three digits is thousands.
+        assert normalize_numbers("៤,០០%") == "4.00%"      # two digits -> decimal
+        assert normalize_numbers("៤,០០០") == "4,000"      # three digits -> thousands
+
+    def test_an_unreadable_grouping_is_left_alone(self):
+        # Neither a 1-2 digit fraction nor 3-digit blocks: do not guess.
+        assert normalize_numbers("១២,៣៤៥៦") == "12,3456"
+
 
 class TestProseIsUntouched:
     def test_sentence_punctuation_survives(self):

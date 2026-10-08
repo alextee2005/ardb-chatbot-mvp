@@ -41,32 +41,51 @@ def khmer_digits_to_arabic(text: str) -> str:
 
 
 def _convert_separators(token: str) -> str:
-    """Rewrite one numeric token from ARDB's convention into English notation.
+    """Rewrite one numeric token from ARDB's notation into English notation.
 
-    ARDB's convention: comma is the decimal point, full stop groups thousands.
+    ARDB is **not** consistent about what a comma means, and assuming it was
+    produced a 1000x error on a real figure. Both appear on the site:
 
-    When a comma is present it is unambiguous -- everything after the last
-    comma is the fraction. Without one, full stops are read as thousands
-    separators only when every group after the first is exactly three digits;
-    otherwise the token is left untouched, which is what keeps a date like
-    ``27.08.2019`` from being mangled into a number.
+        ១,៥០%     comma as the decimal point      -> 1.50%
+        ៤០,០០០ រៀល comma grouping thousands       -> 40,000
+        ១០០.០០០    full stop grouping thousands    -> 100,000
+
+    What disambiguates them is the size of the group after the separator, not
+    which separator it is: a decimal fraction here is written with one or two
+    digits, while a thousands group is always exactly three. So the last group
+    decides. One or two digits means the final separator is the decimal point
+    and any earlier ones group thousands; exactly three means every separator
+    groups thousands.
+
+    Anything else is left untouched, which is what keeps a date like
+    ``27.08.2019`` from being read as a number.
     """
-    if "," in token:
-        head, _, fraction = token.rpartition(",")
-        digits = head.replace(".", "")
-        if not digits.isdigit():
+    # Split on either separator, keeping the groups in order.
+    groups = re.split(r"[.,]", token)
+    head, tail = groups[0], groups[1:]
+    if not tail or not head.isdigit() or not all(g.isdigit() for g in tail):
+        return token
+
+    last = tail[-1]
+
+    if len(last) in (1, 2):
+        # Final separator is the decimal point; earlier groups are thousands,
+        # and must be three digits each for that reading to hold.
+        if any(len(group) != 3 for group in tail[:-1]):
             return token
-        grouped = f"{int(digits):,}"
-        return f"{grouped}.{fraction}" if fraction else grouped
+        if not tail[:-1]:
+            # The source grouped nothing, so neither do we: adding separators
+            # the source never had turns a year like 2019.08 into 2,019.08.
+            return f"{head}.{last}"
+        return f"{int(head + ''.join(tail[:-1])):,}.{last}"
 
-    parts = token.split(".")
-    if len(parts) > 1 and all(len(part) == 3 for part in parts[1:]):
-        joined = "".join(parts)
-        if joined.isdigit():
-            return f"{int(joined):,}"
+    if all(len(group) == 3 for group in tail):
+        # Every separator groups thousands.
+        return f"{int(head + ''.join(tail)):,}"
 
+    # A group that is neither a 1-2 digit fraction nor a 3-digit thousands
+    # block: a date, a version, or something we do not understand. Leave it.
     return token
-
 
 def normalize_numbers(text: str) -> str:
     """Convert Khmer numerals and ARDB's separator convention to English.
