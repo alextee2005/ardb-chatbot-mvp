@@ -82,11 +82,15 @@ jobs:
         if: inputs.consolidate != false
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
         run: |
           set -euo pipefail
           if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
             echo "::error::ANTHROPIC_API_KEY is not set. Add it under Settings → Secrets and variables → Actions, or uncheck 'consolidate' to scrape only."
             exit 1
+          fi
+          if [ -n "${ANTHROPIC_WORKSPACE_ID:-}" ]; then
+            echo "Scoping requests to workspace ${ANTHROPIC_WORKSPACE_ID}."
           fi
           case "${ANTHROPIC_API_KEY}" in
             sk-ant-*) ;;
@@ -99,6 +103,10 @@ jobs:
         working-directory: tools
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Needed only when the key is organization-level rather than scoped
+          # to a workspace. An unscoped key authenticates, then every request
+          # is rejected with "not scoped to a workspace".
+          ANTHROPIC_WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
@@ -124,9 +132,14 @@ jobs:
               echo "verified=partial" >> "${GITHUB_OUTPUT}"
               echo "::warning::Some entries were not consolidated and kept their Khmer text. See the pull request for the cause of each."
             elif [ "${status}" -eq 2 ]; then
-              # Configuration, not corpus: the credential was rejected, so no
-              # entry was even attempted past the first.
-              echo "::error::Consolidation could not authenticate with the Claude API. Check the ANTHROPIC_API_KEY secret. No entry failed verification."
+              # Configuration, not corpus: the pre-flight request was
+              # rejected, so no page was ever sent.
+              echo "::error::Consolidation could not use the Claude credentials. The step output above carries the API's own message and the remedy. No entry failed verification."
+              exit 1
+            elif [ "${status}" -eq 3 ]; then
+              # Every entry failed after the credentials checked out. A
+              # warning on a green run would hide a total failure.
+              echo "::error::No entry was consolidated. The corpus is unchanged Khmer and the causes are in the step output above."
               exit 1
             else
               exit "${status}"

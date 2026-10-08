@@ -231,6 +231,16 @@ ANTHROPIC_API_KEY=... python tools/consolidate_knowledge.py --only faq --force
 The **Scrape knowledge base** workflow runs this automatically (uncheck
 *consolidate* to skip it); it needs an `ANTHROPIC_API_KEY` repository secret.
 
+> **If the key is organization-level rather than workspace-scoped**, it will
+> authenticate and then every request fails with *"This API key is not scoped
+> to a workspace"*. Either create a workspace-scoped key in the Console, or
+> add the workspace ID as an `ANTHROPIC_WORKSPACE_ID` secret — the client
+> sends it as the `anthropic-workspace-id` header.
+
+A single minimal request runs before the loop. Any credential, billing, model
+or workspace problem surfaces there, in one second, carrying the API's own
+message — rather than 33 entries in, reported as a corpus problem.
+
 This deliberately puts a model between what ARDB publishes and what a customer
 is told, which is a real risk: a mistranslated rate reads exactly like a
 correct one, so a moderator approving by eye cannot catch it. Four things hold

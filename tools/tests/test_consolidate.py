@@ -265,3 +265,129 @@ class TestUserMessage:
         assert "fixed-deposit" in message
         assert "<page>" in message and "</page>" in message
         assert "4.00%" in message
+
+
+def _status_error(cls, status: int, message: str):
+    """Build a real SDK error carrying an API-shaped body."""
+    import httpx2
+
+    return cls(
+        message,
+        response=httpx2.Response(
+            status, request=httpx2.Request("POST", "https://api.anthropic.com")
+        ),
+        body={"type": "error", "error": {"type": "invalid_request_error", "message": message}},
+    )
+
+
+WORKSPACE_MESSAGE = (
+    "This API key is not scoped to a workspace, so this request must include "
+    "the anthropic-workspace-id header with the ID of the workspace to use. "
+    "Add the header, or use an API key that is scoped to a workspace."
+)
+
+
+class TestWorkspaceScoping:
+    """The real second-run failure: the key authenticated, then every request
+    was rejected for want of a workspace."""
+
+    def test_an_unscoped_key_aborts_instead_of_advising_a_re_run(self):
+        import anthropic
+
+        error = _status_error(anthropic.BadRequestError, 400, WORKSPACE_MESSAGE)
+        client = _StubClient(payload("x"), error=error)
+
+        with pytest.raises(FatalConsolidationError) as caught:
+            consolidate_entry(client, khmer_entry())
+
+        # Must carry the API's own words, which name the remedy.
+        assert "not scoped to a workspace" in str(caught.value)
+        assert "re-running will not help" in str(caught.value)
+
+    def test_the_client_sends_the_workspace_header_when_given_one(self):
+        from ardb.consolidate import build_client
+
+        client = build_client(api_key="sk-ant-test", workspace_id="wrkspc_123")
+        assert client.default_headers["anthropic-workspace-id"] == "wrkspc_123"
+
+    def test_no_header_when_no_workspace_is_configured(self):
+        from ardb.consolidate import build_client
+
+        client = build_client(api_key="sk-ant-test")
+        assert "anthropic-workspace-id" not in client.default_headers
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            WORKSPACE_MESSAGE,
+            "Your credit balance is too low to access the Claude API.",
+            "model: claude-nonexistent not found",
+            "Your organization has been disabled.",
+        ],
+    )
+    def test_account_level_400s_are_all_fatal(self, message):
+        # None of these describe the page, so none are worth 33 attempts.
+        import anthropic
+
+        client = _StubClient(
+            payload("x"), error=_status_error(anthropic.BadRequestError, 400, message)
+        )
+        with pytest.raises(FatalConsolidationError):
+            consolidate_entry(client, khmer_entry())
+
+    def test_a_page_specific_400_still_fails_only_that_entry(self):
+        # A request too large for the model is about this page, so the rest of
+        # the corpus should still be attempted.
+        import anthropic
+
+        client = _StubClient(
+            payload("x"),
+            error=_status_error(
+                anthropic.BadRequestError, 400, "prompt is too long: 500000 tokens"
+            ),
+        )
+        result = consolidate_entry(client, khmer_entry())
+        assert not result.ok
+        assert not result.failed_verification
+
+
+class TestCredentialPreflight:
+    def test_passes_on_a_working_credential(self):
+        from ardb.consolidate import verify_credentials
+
+        client = _StubClient(payload("ok"))
+        verify_credentials(client)  # must not raise
+
+    def test_sends_no_page_content(self):
+        # The point of the pre-flight is that nothing about the corpus can be
+        # blamed for its failure.
+        from ardb.consolidate import verify_credentials
+
+        client = _StubClient(payload("ok"))
+        verify_credentials(client)
+
+        sent = client.messages.last_request["messages"][0]["content"]
+        assert sent == "ok"
+        assert client.messages.last_request["max_tokens"] == 1
+
+    def test_surfaces_the_workspace_error_before_any_entry_is_sent(self):
+        import anthropic
+        from ardb.consolidate import verify_credentials
+
+        client = _StubClient(
+            payload("x"),
+            error=_status_error(anthropic.BadRequestError, 400, WORKSPACE_MESSAGE),
+        )
+        with pytest.raises(FatalConsolidationError, match="not scoped to a workspace"):
+            verify_credentials(client)
+
+    def test_surfaces_a_rejected_key(self):
+        import anthropic
+        from ardb.consolidate import verify_credentials
+
+        client = _StubClient(
+            payload("x"),
+            error=_status_error(anthropic.AuthenticationError, 401, "invalid x-api-key"),
+        )
+        with pytest.raises(FatalConsolidationError, match="ANTHROPIC_API_KEY"):
+            verify_credentials(client)

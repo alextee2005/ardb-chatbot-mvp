@@ -12,9 +12,14 @@ text as `content` and the Khmer original retained as `sourceText`.
 Already-consolidated entries are skipped unless --force is given, so a re-run
 after a partial failure costs only the entries that failed.
 
-Exit codes: 0 all entries verified, 1 one or more failed verification (the
-file is still written, with failures left at their previous text), 2
-misconfigured.
+Set ANTHROPIC_WORKSPACE_ID when the API key is an organization-level key
+rather than one scoped to a workspace; the Messages API rejects every request
+from an unscoped key unless the workspace is named.
+
+Exit codes: 0 all entries verified, 1 some entries failed but others
+succeeded (the file is written, failures left at their previous text), 2
+misconfigured or the credentials were rejected, 3 every entry failed, which
+is systematic rather than a corpus problem.
 """
 
 from __future__ import annotations
@@ -26,15 +31,15 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-import anthropic
-
 from ardb import knowledge as kb
 from ardb.consolidate import (
     DEFAULT_MODEL,
     FatalConsolidationError,
     TRANSPORT_FAILURE,
     VERIFICATION_FAILURE,
+    build_client,
     consolidate_entry,
+    verify_credentials,
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -81,7 +86,7 @@ def main() -> int:
         print(f"{args.input} has no entries. Run the scraper first.", file=sys.stderr)
         return 2
 
-    client = anthropic.Anthropic()
+    client = build_client(workspace_id=os.environ.get("ANTHROPIC_WORKSPACE_ID"))
 
     selected = [
         entry
@@ -93,6 +98,19 @@ def main() -> int:
     if not selected:
         print("Nothing to consolidate. Use --force to redo existing entries.")
         return 0
+
+    # One minimal request first. A credential problem found here costs a
+    # second; found at entry 33 it costs a run and a misleading report.
+    try:
+        verify_credentials(client, model=args.model)
+    except FatalConsolidationError as error:
+        print(f"{error}", file=sys.stderr)
+        print(
+            "\nNothing was sent and no entry was consolidated. "
+            "No entry failed verification.",
+            file=sys.stderr,
+        )
+        return 2
 
     print(f"Consolidating {len(selected)} of {len(base.entries)} entries with {args.model}…\n")
 
@@ -171,6 +189,19 @@ def main() -> int:
     else:
         kb.dump(result_kb, output)
         print(f"\nWrote {output.relative_to(REPO_ROOT)} at version {result_kb.version}.")
+
+    # Nothing consolidated at all is not a partial result. The credential
+    # pre-flight passed, so this is something systematic that it did not
+    # cover, and reporting it as a warning on a green run -- which is what
+    # happened before -- hides a total failure behind a success.
+    if len(failures) == len(selected):
+        print(
+            f"\nEvery one of the {len(selected)} entries failed. That is a "
+            "systematic problem rather than a corpus one; the causes are "
+            "listed above.",
+            file=sys.stderr,
+        )
+        return 3
 
     return 1 if failures else 0
 

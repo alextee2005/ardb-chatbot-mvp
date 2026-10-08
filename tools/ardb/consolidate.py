@@ -84,6 +84,83 @@ TRANSPORT_FAILURE = "transport"
 MODEL_FAILURE = "model"
 
 
+#: 400 responses that describe the run rather than the page. Every entry will
+#: hit them identically, so they are fatal: re-running changes nothing, and
+#: telling someone to re-run is worse than useless. The workspace-scoping case
+#: is the one that caught us -- an organization-level key authenticates fine,
+#: then every request is rejected for want of a workspace.
+_FATAL_BAD_REQUEST_SIGNALS = (
+    "not scoped to a workspace",
+    "anthropic-workspace-id",
+    "credit balance",
+    "insufficient",
+    "billing",
+    "organization has been disabled",
+    "model:",
+    "not found",
+    "not_found",
+    "does not have access",
+)
+
+
+def build_client(
+    *, api_key: str | None = None, workspace_id: str | None = None
+) -> anthropic.Anthropic:
+    """Construct the client, scoping it to a workspace when one is given.
+
+    An API key created at organization level is not bound to a workspace, and
+    the Messages API then rejects every request unless the request names one.
+    The SDK treats ``anthropic-workspace-id`` as a client-level header, so
+    setting it here covers every call.
+    """
+    headers = {"anthropic-workspace-id": workspace_id} if workspace_id else None
+    return anthropic.Anthropic(api_key=api_key, default_headers=headers)
+
+
+def verify_credentials(client: anthropic.Anthropic, *, model: str = DEFAULT_MODEL) -> None:
+    """Make one minimal request to prove the credentials work.
+
+    Cheaper and far more honest than discovering the problem 33 entries in.
+    Any failure here is run-level by definition -- the request carries no page
+    content, so nothing about the corpus can be at fault -- and is raised with
+    the API's own message, which names the actual remedy better than any
+    guess made from a status code.
+    """
+    try:
+        client.messages.create(
+            model=model,
+            max_tokens=1,
+            messages=[{"role": "user", "content": "ok"}],
+        )
+    except (anthropic.AuthenticationError, anthropic.PermissionDeniedError) as error:
+        raise FatalConsolidationError(
+            f"Claude rejected the credentials ({error.status_code}). "
+            "Check the ANTHROPIC_API_KEY secret: it is missing, malformed, "
+            "revoked, or belongs to a different organization."
+        ) from error
+    except anthropic.APIStatusError as error:
+        raise FatalConsolidationError(
+            f"Claude rejected a minimal test request ({error.status_code}): "
+            f"{_message_of(error)}\n"
+            "This describes the credentials or the account, not the corpus, "
+            "so no page was sent and re-running will not help."
+        ) from error
+    except anthropic.APIConnectionError as error:
+        raise FatalConsolidationError(
+            f"Could not reach the Claude API: {error}"
+        ) from error
+
+
+def _message_of(error: anthropic.APIStatusError) -> str:
+    """The API's own human-readable message, when it sent one."""
+    body = getattr(error, "body", None)
+    if isinstance(body, dict):
+        inner = body.get("error")
+        if isinstance(inner, dict) and inner.get("message"):
+            return str(inner["message"])
+    return str(error)
+
+
 @dataclass(frozen=True, slots=True)
 class ConsolidationResult:
     entry: KnowledgeEntry
@@ -177,6 +254,24 @@ def consolidate_entry(
             "Check the ANTHROPIC_API_KEY secret: it is missing, malformed, "
             "revoked, or belongs to a different organization."
         ) from error
+    except anthropic.BadRequestError as error:
+        message = _message_of(error)
+        lowered = message.lower()
+        if any(signal in lowered for signal in _FATAL_BAD_REQUEST_SIGNALS):
+            # Describes the account or the request shape, not this page.
+            raise FatalConsolidationError(
+                f"Claude rejected the request (400): {message}\n"
+                "This describes the credentials, the account or the model, "
+                "not the corpus, so re-running will not help."
+            ) from error
+        return ConsolidationResult(
+            entry=entry,
+            ok=False,
+            missing_numbers=(),
+            invented_numbers=(),
+            note=f"rejected by Claude: {message}",
+            failure_kind=MODEL_FAILURE,
+        )
     except anthropic.APIError as error:
         return ConsolidationResult(
             entry=entry,
