@@ -11,7 +11,13 @@ from dataclasses import dataclass
 
 import pytest
 
-from ardb.consolidate import build_user_message, consolidate_entry
+from ardb.consolidate import (
+    FatalConsolidationError,
+    TRANSPORT_FAILURE,
+    VERIFICATION_FAILURE,
+    build_user_message,
+    consolidate_entry,
+)
 from ardb.knowledge import KnowledgeEntry
 
 
@@ -114,6 +120,8 @@ class TestVerificationCatchesFigureErrors:
         result = consolidate_entry(client, khmer_entry())
 
         assert not result.ok
+        assert result.failure_kind == VERIFICATION_FAILURE
+        assert result.failed_verification
         assert "4" in result.missing_numbers
 
     def test_an_invented_rate_fails_the_entry(self):
@@ -164,14 +172,54 @@ class TestFailureModes:
         assert not result.ok
         assert "structured output" in result.note
 
-    def test_an_api_error_fails_without_raising(self):
+    def test_a_transport_error_fails_the_entry_without_raising(self):
         import anthropic
 
         error = anthropic.APIError("boom", request=None, body=None)
         client = _StubClient(payload("x"), error=error)
         result = consolidate_entry(client, khmer_entry())
+
         assert not result.ok
-        assert "API error" in result.note
+        assert result.failure_kind == TRANSPORT_FAILURE
+        # Not a verification failure: nothing is wrong with the translation,
+        # because there is no translation.
+        assert not result.failed_verification
+
+    def test_a_rejected_credential_aborts_the_whole_run(self):
+        # The real first-run failure: an invalid key produced 33 sequential
+        # 401s, every one reported as "failed verification", which sent the
+        # reader looking for translation faults that did not exist.
+        import anthropic
+        import httpx2
+
+        error = anthropic.AuthenticationError(
+            "invalid x-api-key",
+            response=httpx2.Response(401, request=httpx2.Request("POST", "https://x")),
+            body=None,
+        )
+        client = _StubClient(payload("x"), error=error)
+
+        with pytest.raises(FatalConsolidationError, match="ANTHROPIC_API_KEY"):
+            consolidate_entry(client, khmer_entry())
+
+    def test_a_permission_error_also_aborts(self):
+        import anthropic
+        import httpx2
+
+        error = anthropic.PermissionDeniedError(
+            "no access",
+            response=httpx2.Response(403, request=httpx2.Request("POST", "https://x")),
+            body=None,
+        )
+        client = _StubClient(payload("x"), error=error)
+
+        with pytest.raises(FatalConsolidationError):
+            consolidate_entry(client, khmer_entry())
+
+    def test_a_refusal_is_not_reported_as_a_figure_mismatch(self):
+        client = _StubClient(payload("..."), stop_reason="refusal")
+        result = consolidate_entry(client, khmer_entry())
+        assert not result.failed_verification
 
     def test_a_non_substantive_page_is_noted_but_not_failed(self):
         client = _StubClient(

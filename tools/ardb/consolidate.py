@@ -64,6 +64,26 @@ Rules about content:
 - If a page carries no substantive information, say so in one sentence rather than padding it."""
 
 
+class FatalConsolidationError(RuntimeError):
+    """A failure that every remaining entry will hit too.
+
+    An invalid API key is the motivating case: it does not describe the entry
+    being processed, it describes the run, and 33 sequential 401s tell nobody
+    anything the first one did not. Raised so the caller stops immediately
+    rather than attributing a configuration problem to the corpus.
+    """
+
+
+#: Why an entry did not get consolidated. The distinction is not cosmetic: a
+#: figure mismatch means review the translation, a transport failure means
+#: re-run, and a config failure means fix the secret. Reporting all three as
+#: "failed verification" sends people to the wrong place -- which is exactly
+#: what happened on the first real run.
+VERIFICATION_FAILURE = "verification"
+TRANSPORT_FAILURE = "transport"
+MODEL_FAILURE = "model"
+
+
 @dataclass(frozen=True, slots=True)
 class ConsolidationResult:
     entry: KnowledgeEntry
@@ -71,10 +91,13 @@ class ConsolidationResult:
     missing_numbers: tuple[str, ...]
     invented_numbers: tuple[str, ...]
     note: str = ""
+    #: One of the *_FAILURE constants when `ok` is False.
+    failure_kind: str | None = None
 
     @property
     def failed_verification(self) -> bool:
-        return not self.ok
+        """True only for a genuine figure mismatch."""
+        return not self.ok and self.failure_kind == VERIFICATION_FAILURE
 
 
 def build_user_message(entry: KnowledgeEntry, prepared_content: str) -> str:
@@ -146,13 +169,22 @@ def consolidate_entry(
             system=CONSOLIDATION_SYSTEM,
             messages=[{"role": "user", "content": build_user_message(entry, prepared)}],
         )
+    except (anthropic.AuthenticationError, anthropic.PermissionDeniedError) as error:
+        # Nothing about this entry is wrong, and every remaining entry will
+        # fail identically. Stop.
+        raise FatalConsolidationError(
+            f"Claude rejected the credentials ({error.status_code}). "
+            "Check the ANTHROPIC_API_KEY secret: it is missing, malformed, "
+            "revoked, or belongs to a different organization."
+        ) from error
     except anthropic.APIError as error:
         return ConsolidationResult(
             entry=entry,
             ok=False,
             missing_numbers=(),
             invented_numbers=(),
-            note=f"API error: {error}",
+            note=f"could not reach Claude: {error}",
+            failure_kind=TRANSPORT_FAILURE,
         )
 
     if response.stop_reason == "refusal":
@@ -163,6 +195,7 @@ def consolidate_entry(
             missing_numbers=(),
             invented_numbers=(),
             note=f"model declined (category: {category})",
+            failure_kind=MODEL_FAILURE,
         )
 
     if response.stop_reason == "max_tokens":
@@ -172,6 +205,7 @@ def consolidate_entry(
             missing_numbers=(),
             invented_numbers=(),
             note="output was cut off before the entry finished",
+            failure_kind=MODEL_FAILURE,
         )
 
     import json
@@ -186,6 +220,7 @@ def consolidate_entry(
             missing_numbers=(),
             invented_numbers=(),
             note=f"could not read the structured output: {error}",
+            failure_kind=MODEL_FAILURE,
         )
 
     english = str(payload["content"]).strip()
@@ -216,4 +251,5 @@ def consolidate_entry(
         missing_numbers=tuple(missing),
         invented_numbers=tuple(invented),
         note=note,
+        failure_kind=None if ok else VERIFICATION_FAILURE,
     )

@@ -241,8 +241,11 @@ it down.
    most likely to produce a wrong number has no model in it. That conversion
    is pure and has 36 tests of its own.
 2. **Every entry is checked for figure preservation** against its source. A
-   figure the source states and the output dropped, or one the output states
-   from nowhere, fails that entry.
+   figure the source states and the output never mentions, or one the output
+   states from nowhere, fails that entry. Compared as sets, not counts: a
+   rate table lists each figure once per currency column, and the faithful
+   English restatement says it once, so counting occurrences would fail good
+   translations — and failing good output trains people to ignore the check.
 3. **A failed entry keeps its Khmer text** rather than shipping an unverified
    rewrite, and is named in the pull request for review.
 4. **The Khmer source is retained** as `sourceText` on every consolidated
@@ -252,6 +255,13 @@ it down.
 
 Entries already consolidated are skipped unless `--force`, so a re-run after a
 partial failure costs only what failed.
+
+Failures are reported by cause, because the response differs: a **figure
+mismatch** needs the translation reviewed, a **transport failure** needs a
+re-run, and a **rejected credential** stops the run on the first entry with
+exit code 2 — it describes the configuration, not the corpus, so attributing
+it to 33 entries would send a reader hunting for translation faults that do
+not exist.
 
 ### Reading ARDB's numbers
 

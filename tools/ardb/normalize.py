@@ -116,14 +116,18 @@ def numbers_match(source: str, translation: str) -> tuple[bool, list[str], list[
     """Compare the figures in ARDB source text against an English translation.
 
     Returns ``(ok, missing, invented)``. ``missing`` is figures the source
-    states and the translation dropped; ``invented`` is figures the
-    translation states that the source does not. Either is disqualifying for a
-    bank: a dropped rate makes an answer incomplete, an invented one makes it
-    false -- and an invented figure is the dangerous case, because it reads
-    exactly like a real one.
+    states and the translation never mentions; ``invented`` is figures the
+    translation states that the source does not.
+
+    Compared as **sets, not multisets**. A rate table lists each figure once
+    per currency column -- ARDB's deposit page gives 1.50% for dollars and
+    1.50% for riel -- and the faithful English restatement is "1.50% in both
+    US dollars and riel", which says it once. Counting occurrences would fail
+    that, and failing good translations trains people to ignore the check,
+    which costs more than the rare case it would catch.
 
     Trailing fractional zeros compare equal (4 == 4.00), because rendering
-    "៤,០០%" as "4%" is a faithful translation rather than a lost figure.
+    "៤,០០%" as "4%" is faithful rather than a lost figure.
     """
 
     def canonical(value: str) -> str:
@@ -132,24 +136,11 @@ def numbers_match(source: str, translation: str) -> tuple[bool, list[str], list[
         except ValueError:
             return value
 
-    def counts(numbers: list[str]) -> dict[str, int]:
-        tally: dict[str, int] = {}
-        for number in numbers:
-            key = canonical(number)
-            tally[key] = tally.get(key, 0) + 1
-        return tally
+    source_values = {canonical(n) for n in extract_numbers(source, convention="ardb")}
+    translation_values = {
+        canonical(n) for n in extract_numbers(translation, convention="english")
+    }
 
-    source_counts = counts(extract_numbers(source, convention="ardb"))
-    translation_counts = counts(extract_numbers(translation, convention="english"))
-
-    missing = sorted(
-        key
-        for key, count in source_counts.items()
-        if translation_counts.get(key, 0) < count
-    )
-    invented = sorted(
-        key
-        for key, count in translation_counts.items()
-        if source_counts.get(key, 0) < count
-    )
+    missing = sorted(source_values - translation_values)
+    invented = sorted(translation_values - source_values)
     return (not missing and not invented, missing, invented)

@@ -29,7 +29,13 @@ from pathlib import Path
 import anthropic
 
 from ardb import knowledge as kb
-from ardb.consolidate import DEFAULT_MODEL, consolidate_entry
+from ardb.consolidate import (
+    DEFAULT_MODEL,
+    FatalConsolidationError,
+    TRANSPORT_FAILURE,
+    VERIFICATION_FAILURE,
+    consolidate_entry,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_INPUT = REPO_ROOT / "knowledge" / "ardb-knowledge.json"
@@ -95,7 +101,23 @@ def main() -> int:
 
     for index, entry in enumerate(selected, start=1):
         print(f"[{index}/{len(selected)}] {entry.id}", flush=True)
-        result = consolidate_entry(client, entry, model=args.model, effort=args.effort)
+        try:
+            result = consolidate_entry(
+                client, entry, model=args.model, effort=args.effort
+            )
+        except FatalConsolidationError as error:
+            # A run-level problem, not an entry-level one. Reporting it per
+            # entry as a verification failure -- which an earlier version did
+            # -- sends people looking for translation faults that do not
+            # exist, so say plainly what is wrong and stop.
+            print(f"\n{error}", file=sys.stderr)
+            print(
+                f"\nStopped at entry {index} of {len(selected)}. "
+                "Nothing was written and no entry failed verification.",
+                file=sys.stderr,
+            )
+            return 2
+
         results[entry.id] = result
 
         if result.ok:
@@ -113,8 +135,9 @@ def main() -> int:
             if result.note:
                 problems.append(result.note)
             reason = "; ".join(problems) or "unknown"
-            print(f"    FAILED · {reason}")
-            failures.append((entry.id, reason))
+            label = "FIGURE MISMATCH" if result.failed_verification else "NOT CONSOLIDATED"
+            print(f"    {label} · {reason}")
+            failures.append((entry.id, result.failure_kind, reason))
 
     # A failed entry keeps whatever it had. Replacing ARDB's own words with an
     # unverified rewrite is the one outcome worth refusing outright.
@@ -161,10 +184,31 @@ def _summarize(result: kb.KnowledgeBase, selected, failures) -> str:
         f"(~{result.estimated_tokens:,} tokens).",
         f"Retained Khmer source: {result.archived_chars:,} characters, never sent.",
     ]
-    if failures:
+    if not failures:
+        return "\n".join(lines)
+
+    # Grouped by cause, because the responses differ: a figure mismatch needs
+    # the translation reviewed, a transport failure needs a re-run, and a
+    # model failure usually needs the page split or written by hand.
+    by_kind: dict[str | None, list[tuple[str, str]]] = {}
+    for entry_id, kind, reason in failures:
+        by_kind.setdefault(kind, []).append((entry_id, reason))
+
+    headings = {
+        VERIFICATION_FAILURE: "failed figure verification (review the translation)",
+        TRANSPORT_FAILURE: "could not reach Claude (re-run to retry)",
+        None: "were not consolidated",
+    }
+
+    for kind, entries in by_kind.items():
         lines.append("")
-        lines.append(f"{len(failures)} entr{'y' if len(failures) == 1 else 'ies'} failed verification and kept their Khmer text:")
-        lines.extend(f"  - {entry_id}: {reason}" for entry_id, reason in failures)
+        heading = headings.get(kind, "could not be consolidated (model output unusable)")
+        lines.append(
+            f"{len(entries)} entr{'y' if len(entries) == 1 else 'ies'} {heading}, "
+            "and kept their Khmer text:"
+        )
+        lines.extend(f"  - {entry_id}: {reason}" for entry_id, reason in entries)
+
     return "\n".join(lines)
 
 
@@ -199,12 +243,28 @@ def _pr_body(summary: str, failures) -> str:
         "",
         *(f"- [ ] {item}" for item in checklist),
     ]
-    if failures:
+    mismatches = [f for f in failures if f[1] == VERIFICATION_FAILURE]
+    others = [f for f in failures if f[1] != VERIFICATION_FAILURE]
+
+    if mismatches:
         parts += [
             "",
-            "## Failed verification — review these first",
+            "## Figure mismatches — review these first",
             "",
-            *(f"- `{entry_id}`: {reason}" for entry_id, reason in failures),
+            "These entries kept their Khmer text because the English draft "
+            "dropped or invented a figure.",
+            "",
+            *(f"- `{entry_id}`: {reason}" for entry_id, _, reason in mismatches),
+        ]
+    if others:
+        parts += [
+            "",
+            "## Not consolidated",
+            "",
+            "These failed before verification, so nothing is wrong with the "
+            "translation — they kept their Khmer text and a re-run will retry them.",
+            "",
+            *(f"- `{entry_id}`: {reason}" for entry_id, _, reason in others),
         ]
     return "\n".join(parts)
 

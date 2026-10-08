@@ -159,9 +159,19 @@ class TestNumbersMatch:
         )
         assert ok, (missing, invented)
 
-    def test_repeated_figures_are_counted_not_just_present(self):
-        # The deposit table lists each rate twice, once per currency. A
-        # translation that mentions it once has lost the currency split.
-        ok, missing, _ = numbers_match("១,៥០% ១,៥០%", "The rate is 1.50%.")
+    def test_a_figure_repeated_per_currency_may_be_stated_once(self):
+        # ARDB's deposit table gives each rate twice, for dollars and riel.
+        # The faithful English restatement says it once -- "1.50% in both US
+        # dollars and riel" -- so counting occurrences would fail a correct
+        # translation. Failing good output trains people to ignore the check.
+        ok, missing, invented = numbers_match(
+            "ដុល្លារ ១,៥០% | រៀល ១,៥០%",
+            "The rate is 1.50% in both US dollars and riel.",
+        )
+        assert ok, (missing, invented)
+
+    def test_a_distinct_dropped_rate_is_still_caught(self):
+        # Set semantics costs nothing here: the values differ.
+        ok, missing, _ = numbers_match("១,៥០% និង ២,៧៥%", "The rate is 1.50%.")
         assert not ok
-        assert "1.5" in missing
+        assert "2.75" in missing

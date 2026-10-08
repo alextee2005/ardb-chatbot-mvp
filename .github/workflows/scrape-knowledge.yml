@@ -78,6 +78,21 @@ jobs:
           fi
           python scrape_knowledge.py "${args[@]}"
 
+      - name: Check the Claude credential before spending anything
+        if: inputs.consolidate != false
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+            echo "::error::ANTHROPIC_API_KEY is not set. Add it under Settings → Secrets and variables → Actions, or uncheck 'consolidate' to scrape only."
+            exit 1
+          fi
+          case "${ANTHROPIC_API_KEY}" in
+            sk-ant-*) ;;
+            *) echo "::warning::ANTHROPIC_API_KEY does not start with sk-ant-. If the run fails to authenticate, the secret is probably wrong." ;;
+          esac
+
       - name: Consolidate into normalized English
         id: consolidate
         if: inputs.consolidate != false
@@ -104,8 +119,15 @@ jobs:
           else
             status=$?
             if [ "${status}" -eq 1 ]; then
+              # Some entries kept their Khmer text. The run is still useful and
+              # the causes are grouped in the pull request.
               echo "verified=partial" >> "${GITHUB_OUTPUT}"
-              echo "::warning::Some entries failed figure verification and kept their Khmer text. See the pull request."
+              echo "::warning::Some entries were not consolidated and kept their Khmer text. See the pull request for the cause of each."
+            elif [ "${status}" -eq 2 ]; then
+              # Configuration, not corpus: the credential was rejected, so no
+              # entry was even attempted past the first.
+              echo "::error::Consolidation could not authenticate with the Claude API. Check the ANTHROPIC_API_KEY secret. No entry failed verification."
+              exit 1
             else
               exit "${status}"
             fi
@@ -147,7 +169,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          branch="knowledge/scrape-${VERSION:-$(date -u +%Y%m%d-%H%M)}"
+          # The run id keeps the branch unique. The version alone is
+          # date-plus-entry-count, so two runs on the same day that keep the
+          # same number of pages collide and the push is rejected -- which is
+          # exactly what happened on run 3.
+          branch="knowledge/scrape-${VERSION:-$(date -u +%Y%m%d-%H%M)}-${GITHUB_RUN_ID}"
 
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
