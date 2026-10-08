@@ -96,12 +96,12 @@ jobs:
             git --no-pager diff --stat -- knowledge/ardb-knowledge.json
           fi
 
-      - name: Open pull request
+      - name: Push branch and open pull request
         if: steps.diff.outputs.changed == 'true' && inputs.dry_run != true
         env:
-          # The workflow's own token. Pull requests opened with it do not
-          # trigger other workflows, so CI will not run on this branch until a
-          # human reopens the pull request or re-runs CI by hand.
+          # Pull requests opened with this token do not trigger other
+          # workflows, so CI will not run on the branch until a human reopens
+          # the pull request or re-runs CI by hand.
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.scrape.outputs.version }}
         run: |
@@ -116,11 +116,63 @@ jobs:
           git commit -m "Refresh ARDB knowledge base (${VERSION:-unversioned})"
           git push --set-upstream origin "${branch}"
 
+          # The branch is now safe on the remote, so the scrape cannot be lost
+          # from here on. Opening the pull request is the part that can be
+          # refused: GITHUB_TOKEN cannot create one unless "Allow GitHub
+          # Actions to create and approve pull requests" is enabled in
+          # Settings -> Actions -> General, and that is off by default. Treat
+          # a refusal as a degraded success and hand over a one-click link
+          # rather than failing a run whose real work succeeded.
+          #
           # Body comes from a file written by the scraper: a heredoc here
           # would carry the YAML indentation into the Markdown and render
           # every line as a code block.
-          gh pr create \
-            --title "Refresh ARDB knowledge base (${VERSION:-unversioned})" \
-            --body-file "${RUNNER_TEMP}/pr-body.md" \
-            --base "${GITHUB_REF_NAME}" \
-            --head "${branch}"
+          compare_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/${GITHUB_REF_NAME}...${branch}?expand=1"
+
+          if gh pr create \
+              --title "Refresh ARDB knowledge base (${VERSION:-unversioned})" \
+              --body-file "${RUNNER_TEMP}/pr-body.md" \
+              --base "${GITHUB_REF_NAME}" \
+              --head "${branch}" 2> "${RUNNER_TEMP}/pr-error.txt"; then
+            echo "Pull request opened."
+            {
+              echo "### Pull request opened"
+              echo
+              gh pr view "${branch}" --json url --jq .url
+            } >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+
+          cat "${RUNNER_TEMP}/pr-error.txt"
+
+          if grep -qi "not permitted to create or approve pull requests" "${RUNNER_TEMP}/pr-error.txt"; then
+            {
+              echo "### Branch pushed — open the pull request manually"
+              echo
+              echo "The scrape succeeded and \`${branch}\` is pushed. GitHub"
+              echo "refused to let Actions open the pull request, which is the"
+              echo "default for a repository."
+              echo
+              echo "**[Open the pull request](${compare_url})**"
+              echo
+              echo "To let future runs open it automatically, enable"
+              echo "*Settings → Actions → General → Workflow permissions →"
+              echo "Allow GitHub Actions to create and approve pull requests*."
+            } >> "${GITHUB_STEP_SUMMARY}"
+            echo "::warning::Branch ${branch} pushed, but Actions is not permitted to open pull requests. Open it at ${compare_url}"
+            exit 0
+          fi
+
+          # Any other failure is a real one.
+          {
+            echo "### Pull request could not be opened"
+            echo
+            echo "Branch \`${branch}\` is pushed. \`gh pr create\` failed:"
+            echo
+            echo '```'
+            cat "${RUNNER_TEMP}/pr-error.txt"
+            echo '```'
+            echo
+            echo "**[Open it manually](${compare_url})**"
+          } >> "${GITHUB_STEP_SUMMARY}"
+          exit 1

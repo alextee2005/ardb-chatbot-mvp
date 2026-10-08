@@ -188,7 +188,26 @@ def merge_entries(
     by_id: dict[str, KnowledgeEntry] = {entry.id: entry for entry in scraped}
     for entry in manual:
         by_id[entry.id] = entry
-    return tuple(sorted(by_id.values(), key=lambda entry: entry.id))
+
+    # Drop pages whose content is byte-identical to one already kept. A site
+    # with /, /en and /km serves the same homepage under three URLs, and
+    # paying to send it three times with every question buys nothing.
+    #
+    # The shortest URL wins, so the canonical page beats a language alias:
+    # https://host beats https://host/en. Sorting by ID length instead would
+    # pick "en" over "home", keeping the alias and discarding the real thing.
+    # Manual entries are never dropped -- an override that deliberately
+    # duplicates a page is the author's call.
+    deduplicated: dict[str, KnowledgeEntry] = {}
+    content_owner: dict[str, str] = {}
+    for entry in sorted(by_id.values(), key=lambda item: (len(item.url), item.url)):
+        existing = content_owner.get(entry.content)
+        if existing is not None and not entry.is_manual:
+            continue
+        content_owner.setdefault(entry.content, entry.id)
+        deduplicated[entry.id] = entry
+
+    return tuple(sorted(deduplicated.values(), key=lambda entry: entry.id))
 
 
 def build_version(entry_count: int, now: datetime | None = None) -> str:

@@ -17,7 +17,7 @@ from urllib.parse import unquote, urljoin, urlparse, urldefrag
 from urllib.robotparser import RobotFileParser
 
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, NavigableString
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -151,11 +151,36 @@ def should_keep(url: str, origin: str) -> bool:
     return _LATIN_WORD_RE.search(path) is None
 
 
+def _render_tables(root) -> None:
+    """Flatten each table into one line per row, cells joined by " | ".
+
+    Without this, ``get_text`` emits every cell on its own line and a rate
+    table becomes a vertical list of numbers: the term, the dollar rate and
+    the riel rate all look alike, and the pairing survives only as position.
+    ARDB's deposit page is exactly this shape, so a model reading it could
+    pair a 24-month term with a 1-month rate. One row per line keeps the
+    association explicit.
+    """
+    for table in root.find_all("table"):
+        lines: list[str] = []
+        for row in table.find_all("tr"):
+            cells = [
+                cell.get_text(" ", strip=True)
+                for cell in row.find_all(["th", "td"])
+            ]
+            cells = [cell for cell in cells if cell]
+            if cells:
+                lines.append(" | ".join(cells))
+        table.replace_with(NavigableString("\n" + "\n".join(lines) + "\n"))
+
+
 def extract_text(soup: BeautifulSoup) -> str:
     """Strip the chrome and return the readable body as plain text."""
     for selector in _STRIP_SELECTORS:
         for element in soup.select(selector):
             element.decompose()
+
+    _render_tables(soup)
 
     root = None
     for selector in _CONTENT_SELECTORS:

@@ -130,14 +130,21 @@ class TestSlugify:
 
 class TestMergeEntries:
     def test_sorted_by_id_for_cache_stability(self):
+        # Distinct content, so this exercises ordering rather than the
+        # identical-content dedupe below.
         merged = kb.merge_entries(
-            [entry(id="zebra"), entry(id="alpha"), entry(id="middle")], []
+            [
+                entry(id="zebra", content="third"),
+                entry(id="alpha", content="first"),
+                entry(id="middle", content="second"),
+            ],
+            [],
         )
         assert [item.id for item in merged] == ["alpha", "middle", "zebra"]
 
     def test_manual_entries_are_preserved(self):
-        manual = entry(id="manual-rates", url=kb.MANUAL_URL)
-        merged = kb.merge_entries([entry(id="scraped")], [manual])
+        manual = entry(id="manual-rates", url=kb.MANUAL_URL, content="hand-written")
+        merged = kb.merge_entries([entry(id="scraped", content="scraped")], [manual])
         assert {item.id for item in merged} == {"manual-rates", "scraped"}
 
     def test_manual_overrides_a_scraped_page_of_the_same_id(self):
@@ -256,3 +263,63 @@ class TestPullRequestBody:
         base = kb.KnowledgeBase(version="v", generated_at="t", source="s", entries=())
         for line in build_pr_body("summary", base).splitlines():
             assert line == line.lstrip(), f"indented line would render as code: {line!r}"
+
+
+class TestDeduplication:
+    def test_drops_a_page_served_under_several_urls(self):
+        # ARDB serves the same homepage at /, /en and /km. Sending it three
+        # times with every question buys nothing and costs tokens.
+        shared = "Welcome to ARDB."
+        merged = kb.merge_entries(
+            [
+                entry(id="home", url="https://x", content=shared),
+                entry(id="en", url="https://x/en", content=shared),
+                entry(id="km", url="https://x/km", content=shared),
+            ],
+            [],
+        )
+        assert len(merged) == 1
+
+    def test_keeps_the_canonical_page_not_the_language_alias(self):
+        # The real case from ardb.com.kh: / and /en serve identical content.
+        # Keying on ID length would keep "en" and discard "home".
+        shared = "Welcome to ARDB."
+        merged = kb.merge_entries(
+            [
+                entry(id="en", url="https://www.ardb.com.kh/en", content=shared),
+                entry(id="home", url="https://www.ardb.com.kh", content=shared),
+            ],
+            [],
+        )
+        assert [item.id for item in merged] == ["home"]
+
+    def test_keeps_pages_that_merely_overlap(self):
+        merged = kb.merge_entries(
+            [
+                entry(id="a", content="Loans are available."),
+                entry(id="b", content="Loans are available. Terms apply."),
+            ],
+            [],
+        )
+        assert len(merged) == 2
+
+    def test_never_drops_a_manual_entry(self):
+        # When a hand-written entry and a scraped page carry byte-identical
+        # content, the hand-written one is the keeper: it is the version a
+        # person vouched for, and the scraped copy adds nothing.
+        shared = "The correct answer."
+        merged = kb.merge_entries(
+            [entry(id="scraped", content=shared)],
+            [entry(id="manual-note", url=kb.MANUAL_URL, content=shared)],
+        )
+        assert [item.id for item in merged] == ["manual-note"]
+
+    def test_result_stays_sorted_after_dropping(self):
+        shared = "same"
+        merged = kb.merge_entries(
+            [entry(id="zz", content=shared), entry(id="aa", content="other"),
+             entry(id="bb", content=shared)],
+            [],
+        )
+        ids = [item.id for item in merged]
+        assert ids == sorted(ids)

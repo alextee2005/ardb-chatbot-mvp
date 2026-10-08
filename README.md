@@ -95,6 +95,13 @@ opens a pull request with the result and a review checklist — deliberately a
 pull request, not a direct commit, because an unreviewed knowledge file is how
 a navigation blob or a wrong interest rate reaches a customer.
 
+> **One repository setting.** `GITHUB_TOKEN` cannot open a pull request unless
+> *Settings → Actions → General → Workflow permissions → Allow GitHub Actions
+> to create and approve pull requests* is enabled, and it is off by default.
+> Without it the workflow still scrapes and pushes the branch, then prints a
+> one-click link to open the pull request yourself — the scrape is never lost
+> to that setting.
+
 Locally instead:
 
 ```bash
@@ -205,6 +212,20 @@ is sent — which is what stops two moderators delivering two answers.
 configured group reach the moderator handlers, so anyone who can see a card is
 a moderator by construction. There is no allowlist to drift out of sync with
 the group's membership — add and remove staff in Telegram.
+
+### Reading ARDB's numbers
+
+The source pages write figures in Khmer numerals with a comma for the decimal
+point and a full stop for thousands: `១,៥០%` is 1.50%, `១០០.០០០` is 100,000.
+Read with English conventions, a 4.00% deposit rate becomes **400%** — so the
+system prompt states the convention explicitly, tells Claude to convert to
+Arabic numerals when answering in English, and to decline rather than quote a
+figure that only makes sense under the other reading.
+
+Rate tables are flattened out of HTML one row per line, cells joined by `" | "`
+(typically term, then USD rate, then riel rate). Cell-per-line would leave the
+term and the two currency rates indistinguishable, with the pairing surviving
+only as position — close enough to guess wrong.
 
 ### Why the tooling is Python on Actions
 

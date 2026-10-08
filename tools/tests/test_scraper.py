@@ -167,3 +167,46 @@ class TestExtractTitle:
 class TestThinContentGuard:
     def test_threshold_is_set_where_stubs_fall_out(self):
         assert scraper.MIN_CONTENT_CHARS == 200
+
+
+class TestTableExtraction:
+    def test_keeps_each_row_on_one_line(self):
+        # ARDB's deposit page is a rate table. Flattened cell-per-line, the
+        # term and the two currency rates become indistinguishable and the
+        # pairing survives only as position.
+        html = """
+        <main><table>
+          <tr><th>រយៈពេល</th><th>ដុល្លារ</th><th>រៀល</th></tr>
+          <tr><td>១ខែ</td><td>១,៥០%</td><td>១,៥០%</td></tr>
+          <tr><td>១២ខែ</td><td>៤,០០%</td><td>៤,០០%</td></tr>
+        </table></main>
+        """
+        text = scraper.extract_text(soup(html))
+        assert "១ខែ | ១,៥០% | ១,៥០%" in text
+        assert "១២ខែ | ៤,០០% | ៤,០០%" in text
+
+    def test_keeps_the_header_row(self):
+        html = "<main><table><tr><th>Term</th><th>Rate</th></tr><tr><td>1m</td><td>1.5%</td></tr></table></main>"
+        text = scraper.extract_text(soup(html))
+        assert "Term | Rate" in text
+
+    def test_drops_empty_cells_rather_than_emitting_bare_separators(self):
+        html = "<main><table><tr><td>1m</td><td></td><td>1.5%</td></tr></table></main>"
+        text = scraper.extract_text(soup(html))
+        assert "1m | 1.5%" in text
+        assert "|  |" not in text
+
+    def test_skips_a_row_with_no_cells(self):
+        html = "<main><table><tr></tr><tr><td>1m</td></tr></table></main>"
+        text = scraper.extract_text(soup(html))
+        assert "1m" in text
+
+    def test_leaves_prose_around_the_table_intact(self):
+        html = "<main><p>Before.</p><table><tr><td>a</td><td>b</td></tr></table><p>After.</p></main>"
+        text = scraper.extract_text(soup(html))
+        lines = text.splitlines()
+        assert lines.index("Before.") < lines.index("a | b") < lines.index("After.")
+
+    def test_handles_a_page_with_no_table(self):
+        text = scraper.extract_text(soup("<main><p>No tables here.</p></main>"))
+        assert text == "No tables here."
