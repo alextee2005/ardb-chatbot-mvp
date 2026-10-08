@@ -200,3 +200,48 @@ class TestNumbersMatch:
         ok, missing, _ = numbers_match("១,៥០% និង ២,៧៥%", "The rate is 1.50%.")
         assert not ok
         assert "2.75" in missing
+
+
+class TestEnumeratorsAndArticles:
+    """Artefacts of how ARDB formats its pages, not figures. Each of these
+    failed a correct translation until it was handled."""
+
+    def test_numbered_repayment_lists_are_not_figures(self):
+        ok, missing, _ = numbers_match(
+            "របៀបបង់សង | 1.ការប្រាក់ប្រចាំខែ 2.ប្រាក់ដើមនៅចុងវគ្គ",
+            "Interest is paid monthly and the principal at the end of the term.",
+        )
+        assert ok, missing
+
+    def test_slash_enumerated_conditions_are_not_figures(self):
+        # The women-entrepreneur page numbers its conditions "1/ ... 4/".
+        ok, missing, _ = numbers_match(
+            "លក្ខខណ្ឌ ៖ 1/ ម្ចាស់អាជីវកម្ម 2/ភាគហ៊ុនិក 3/បុគ្គលិក និង 4/ក្រុមប្រឹក្សា",
+            "The owner is a woman, most shareholders are women, most staff are "
+            "women, or most of the board are women.",
+        )
+        assert ok, missing
+
+    def test_a_missing_bare_one_is_tolerated(self):
+        # "ក្នុង1ឆ្នំា" is faithfully "a year", not "per 1 year".
+        ok, _, _ = numbers_match("អត្រាការប្រាក់ 6% ទៅ 7.5%ក្នុង1ឆ្នំា",
+                                 "The annual interest rate is 6% to 7.5%.")
+        assert ok
+
+    def test_but_a_missing_one_percent_fee_is_not_hidden_by_that(self):
+        # The tolerance is for the value 1 alone. A dropped 1% fee alongside
+        # other figures still leaves those others enforced.
+        ok, missing, _ = numbers_match(
+            "កម្រៃសេវា 1.5% និងរយៈពេល 36 ខែ",
+            "The term is 36 months.",
+        )
+        assert not ok
+        assert "1.5" in missing
+
+    def test_a_missing_large_amount_still_fails(self):
+        ok, missing, _ = numbers_match(
+            "រហូតដល់ 1,000,000 ដុល្លារ",
+            "Loans are available in US dollars.",
+        )
+        assert not ok
+        assert "1000000" in missing

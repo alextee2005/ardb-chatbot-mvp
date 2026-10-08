@@ -97,6 +97,25 @@ def normalize_numbers(text: str) -> str:
     return _NUMBER_RE.sub(lambda match: _convert_separators(match.group(0)), converted)
 
 
+#: An enumerator: a one or two digit number, a full stop, then something that
+#: is not a digit -- "1.ការប្រាក់" or "2. principal". ARDB's repayment terms
+#: are written as numbered lists, so without this the markers count as
+#: figures and a faithful restatement that does not repeat them is reported
+#: as having dropped two. The lookahead for a non-digit is what keeps "1.50%"
+#: and "27.08.2019" out of it, and the lookbehind keeps the inner groups of
+#: "1.000.000" out.
+_LIST_MARKER_RE = re.compile(r"(?<![\d.])\d{1,2}\.(?=\s*[^\d\s])")
+
+#: A slash enumerator: "1/ owner 2/ shareholders 3/ staff 4/ board", which is
+#: how the women-entrepreneur page numbers its eligibility conditions.
+_SLASH_MARKER_RE = re.compile(r"(?<![\d./])\d{1,2}/(?=\s*[^\d\s/])")
+
+
+def _strip_list_markers(text: str) -> str:
+    """Remove enumerator digits so they are not mistaken for figures."""
+    return _SLASH_MARKER_RE.sub(" ", _LIST_MARKER_RE.sub(" ", text))
+
+
 def extract_numbers(text: str, *, convention: str = "english") -> list[str]:
     """Every number in the text, canonicalized for comparison.
 
@@ -114,6 +133,8 @@ def extract_numbers(text: str, *, convention: str = "english") -> list[str]:
     """
     if convention not in ("ardb", "english"):
         raise ValueError(f"unknown convention: {convention!r}")
+
+    text = _strip_list_markers(text)
 
     # Normalizing ARDB text leaves it in English notation, so one parser does
     # for both once the conversion has happened.
@@ -162,4 +183,12 @@ def numbers_match(source: str, translation: str) -> tuple[bool, list[str], list[
 
     missing = sorted(source_values - translation_values)
     invented = sorted(translation_values - source_values)
+
+    # A missing bare 1 is tolerated. English writes it as a word more often
+    # than as a digit -- ARDB's "ក្នុង1ឆ្នំា" is faithfully "a year", not
+    # "per 1 year" -- so flagging it fails correct translations, and a check
+    # that cries wolf is a check people stop reading. Every other figure,
+    # including 1% and 1,000,000, is still enforced.
+    missing = [value for value in missing if value != "1"]
+
     return (not missing and not invented, missing, invented)
