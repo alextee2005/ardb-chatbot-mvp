@@ -16,6 +16,8 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.131.0",
+    "@neon/config": "^1.8.4",
+    "@neon/env": "^1.5.1",
     "@neondatabase/serverless": "^1.0.1"
   },
   "devDependencies": {
