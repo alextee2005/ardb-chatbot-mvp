@@ -46,6 +46,19 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_INPUT = REPO_ROOT / "knowledge" / "ardb-knowledge.json"
 
 
+def _display_path(path: Path) -> str:
+    """Repo-relative when it is inside the repo, absolute otherwise.
+
+    ``--output`` accepts any path, and Path.relative_to raises rather than
+    falling back -- so printing the result crashed after the file had already
+    been written, turning a finished run into a traceback.
+    """
+    try:
+        return str(path.resolve().relative_to(REPO_ROOT))
+    except ValueError:
+        return str(path)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
@@ -192,7 +205,7 @@ def main() -> int:
         print("\nDry run — nothing written.")
     else:
         kb.dump(result_kb, output)
-        print(f"\nWrote {output.relative_to(REPO_ROOT)} at version {result_kb.version}.")
+        print(f"\nWrote {_display_path(output)} at version {result_kb.version}.")
 
     # Nothing consolidated at all is not a partial result. The credential
     # pre-flight passed, so this is something systematic that it did not

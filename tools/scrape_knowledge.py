@@ -28,6 +28,14 @@ from ardb.scraper import DEFAULT_ORIGIN, crawl
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUTPUT = REPO_ROOT / "knowledge" / "ardb-knowledge.json"
 
+
+def _display_path(path: Path) -> str:
+    """Repo-relative inside the repo, absolute otherwise; never raises."""
+    try:
+        return str(path.resolve().relative_to(REPO_ROOT))
+    except ValueError:
+        return str(path)
+
 #: Guard against a crawl that balloons. The whole corpus is sent with every
 #: question, so an accidental ingest of the news archive is a standing cost on
 #: every draft, not a one-off. Tripping this fails the run rather than
@@ -187,7 +195,7 @@ def main() -> int:
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     kb.dump(result, args.output)
-    print(f"\nWrote {args.output.relative_to(REPO_ROOT)} at version {result.version}.")
+    print(f"\nWrote {_display_path(args.output)} at version {result.version}.")
     print("Review the diff before merging.")
 
     # Surface the version to a workflow without re-parsing the file.

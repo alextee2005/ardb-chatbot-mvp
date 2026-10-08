@@ -323,3 +323,26 @@ class TestDeduplication:
         )
         ids = [item.id for item in merged]
         assert ids == sorted(ids)
+
+
+class TestDisplayPath:
+    """`--output` accepts any path, and Path.relative_to raises instead of
+    falling back -- so printing the result crashed *after* the file had been
+    written, turning a finished run into a traceback and a failing exit."""
+
+    def test_repo_relative_inside_the_repo(self):
+        from consolidate_knowledge import REPO_ROOT, _display_path
+
+        shown = _display_path(REPO_ROOT / "knowledge" / "ardb-knowledge.json")
+        assert shown == "knowledge/ardb-knowledge.json"
+
+    def test_absolute_outside_the_repo_rather_than_raising(self, tmp_path):
+        from consolidate_knowledge import _display_path
+
+        target = tmp_path / "elsewhere.json"
+        assert _display_path(target) == str(target)
+
+    def test_the_scraper_has_the_same_guard(self, tmp_path):
+        from scrape_knowledge import _display_path
+
+        assert _display_path(tmp_path / "x.json") == str(tmp_path / "x.json")
