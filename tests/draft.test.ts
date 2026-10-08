@@ -85,13 +85,17 @@ describe("buildSystemBlocks", () => {
     expect(instructions).toMatch(/never promise/i);
   });
 
-  it("states both number conventions, so 4.00% is never read as 400%", () => {
+  it("explains that ARDB's comma means both things, by group size", () => {
     // The corpus is normalized English, but a failed consolidation leaves an
-    // entry in Khmer, where the separators mean the opposite.
+    // entry in Khmer -- where the same comma is a decimal point in "១,៥០%"
+    // and a thousands separator in "៤០,០០០". Reading it one way only is how
+    // 4.00% becomes 400%, or 40,000 riel becomes 40.
     const instructions = buildSystemBlocks(populated)[0]?.text ?? "";
     expect(instructions).toMatch(/full stop is the decimal point/i);
-    expect(instructions).toMatch(/COMMA for the decimal point/);
+    expect(instructions).toMatch(/comma BOTH ways/);
+    expect(instructions).toMatch(/size of the group after it/i);
     expect(instructions).toContain("400%");
+    expect(instructions).toContain("40,000 riel becomes 40");
   });
 
   it("stops an English corpus from pulling answers into English", () => {
