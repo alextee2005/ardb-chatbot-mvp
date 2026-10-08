@@ -16,6 +16,11 @@ on:
         required: false
         default: false
         type: boolean
+      consolidate:
+        description: "Restate every page as normalized English (costs Claude tokens)"
+        required: false
+        default: true
+        type: boolean
       dry_run:
         description: "Report what would change without opening a pull request"
         required: false
@@ -72,6 +77,41 @@ jobs:
             args+=(--dry-run)
           fi
           python scrape_knowledge.py "${args[@]}"
+
+      - name: Consolidate into normalized English
+        id: consolidate
+        if: inputs.consolidate != false
+        working-directory: tools
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          args=(
+            --summary-file "${RUNNER_TEMP}/consolidate-summary.txt"
+            --pr-body-file "${RUNNER_TEMP}/pr-body.md"
+          )
+          if [ "${DRY_RUN}" = "true" ]; then
+            args+=(--dry-run)
+          fi
+
+          # Exit 1 means some entries failed figure verification. Those keep
+          # their Khmer text rather than shipping an unverified rewrite, so
+          # the run is still useful -- the failures are named in the pull
+          # request for review. Only a harder failure should stop the run.
+          if python consolidate_knowledge.py "${args[@]}"; then
+            echo "verified=all" >> "${GITHUB_OUTPUT}"
+          else
+            status=$?
+            if [ "${status}" -eq 1 ]; then
+              echo "verified=partial" >> "${GITHUB_OUTPUT}"
+              echo "::warning::Some entries failed figure verification and kept their Khmer text. See the pull request."
+            else
+              exit "${status}"
+            fi
+          fi
+
+          cat "${RUNNER_TEMP}/consolidate-summary.txt" >> "${RUNNER_TEMP}/summary.txt"
 
       - name: Publish summary
         if: always()

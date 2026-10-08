@@ -1,0 +1,213 @@
+#!/usr/bin/env python3
+"""Consolidate the scraped corpus into one normalized English knowledge base.
+
+    ANTHROPIC_API_KEY=... python tools/consolidate_knowledge.py
+    ANTHROPIC_API_KEY=... python tools/consolidate_knowledge.py --only faq
+    ANTHROPIC_API_KEY=... python tools/consolidate_knowledge.py --dry-run
+
+Reads knowledge/ardb-knowledge.json, restates each page in English, verifies
+every published figure survived, and writes the file back with the English
+text as `content` and the Khmer original retained as `sourceText`.
+
+Already-consolidated entries are skipped unless --force is given, so a re-run
+after a partial failure costs only the entries that failed.
+
+Exit codes: 0 all entries verified, 1 one or more failed verification (the
+file is still written, with failures left at their previous text), 2
+misconfigured.
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import os
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+import anthropic
+
+from ardb import knowledge as kb
+from ardb.consolidate import DEFAULT_MODEL, consolidate_entry
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_INPUT = REPO_ROOT / "knowledge" / "ardb-knowledge.json"
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
+    parser.add_argument("--output", type=Path, default=None)
+    parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument(
+        "--effort",
+        default="high",
+        choices=("low", "medium", "high", "xhigh", "max"),
+        help="Defaults to high: this runs once per page in a batch, and a "
+        "figure dropped here is wrong for every answer afterwards.",
+    )
+    parser.add_argument(
+        "--only",
+        action="append",
+        metavar="ID",
+        help="Consolidate only these entry IDs. Repeatable.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-consolidate entries that already have sourceText.",
+    )
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--summary-file", type=Path)
+    parser.add_argument("--pr-body-file", type=Path)
+    args = parser.parse_args()
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        print("ANTHROPIC_API_KEY is not set.", file=sys.stderr)
+        return 2
+
+    output = args.output or args.input
+    base = kb.load(args.input)
+    if not base.entries:
+        print(f"{args.input} has no entries. Run the scraper first.", file=sys.stderr)
+        return 2
+
+    client = anthropic.Anthropic()
+
+    selected = [
+        entry
+        for entry in base.entries
+        if (args.only is None or entry.id in args.only)
+        and (args.force or not entry.is_consolidated)
+    ]
+
+    if not selected:
+        print("Nothing to consolidate. Use --force to redo existing entries.")
+        return 0
+
+    print(f"Consolidating {len(selected)} of {len(base.entries)} entries with {args.model}…\n")
+
+    results = {}
+    failures = []
+
+    for index, entry in enumerate(selected, start=1):
+        print(f"[{index}/{len(selected)}] {entry.id}", flush=True)
+        result = consolidate_entry(client, entry, model=args.model, effort=args.effort)
+        results[entry.id] = result
+
+        if result.ok:
+            detail = f" ({result.note})" if result.note else ""
+            print(
+                f"    verified · {len(entry.content):,} Khmer chars → "
+                f"{len(result.entry.content):,} English{detail}"
+            )
+        else:
+            problems = []
+            if result.missing_numbers:
+                problems.append(f"dropped {', '.join(result.missing_numbers)}")
+            if result.invented_numbers:
+                problems.append(f"invented {', '.join(result.invented_numbers)}")
+            if result.note:
+                problems.append(result.note)
+            reason = "; ".join(problems) or "unknown"
+            print(f"    FAILED · {reason}")
+            failures.append((entry.id, reason))
+
+    # A failed entry keeps whatever it had. Replacing ARDB's own words with an
+    # unverified rewrite is the one outcome worth refusing outright.
+    merged = tuple(
+        results[entry.id].entry
+        if entry.id in results and results[entry.id].ok
+        else entry
+        for entry in base.entries
+    )
+
+    now = datetime.now(timezone.utc)
+    result_kb = kb.KnowledgeBase(
+        version=f"{kb.build_version(len(merged), now)}-en",
+        generated_at=now.isoformat().replace("+00:00", "Z"),
+        source=base.source,
+        entries=merged,
+    )
+
+    summary = _summarize(result_kb, selected, failures)
+    print("\n" + summary)
+
+    if args.summary_file:
+        args.summary_file.write_text(summary + "\n", encoding="utf-8")
+    if args.pr_body_file:
+        args.pr_body_file.write_text(
+            _pr_body(summary, failures) + "\n", encoding="utf-8"
+        )
+
+    if args.dry_run:
+        print("\nDry run — nothing written.")
+    else:
+        kb.dump(result_kb, output)
+        print(f"\nWrote {output.relative_to(REPO_ROOT)} at version {result_kb.version}.")
+
+    return 1 if failures else 0
+
+
+def _summarize(result: kb.KnowledgeBase, selected, failures) -> str:
+    lines = [
+        f"Consolidated {len(selected) - len(failures)} of {len(selected)} entries.",
+        f"Corpus: {len(result.entries)} entries, "
+        f"{result.consolidated_count} in English, "
+        f"{result.total_chars:,} characters sent per question "
+        f"(~{result.estimated_tokens:,} tokens).",
+        f"Retained Khmer source: {result.archived_chars:,} characters, never sent.",
+    ]
+    if failures:
+        lines.append("")
+        lines.append(f"{len(failures)} entr{'y' if len(failures) == 1 else 'ies'} failed verification and kept their Khmer text:")
+        lines.extend(f"  - {entry_id}: {reason}" for entry_id, reason in failures)
+    return "\n".join(lines)
+
+
+def _pr_body(summary: str, failures) -> str:
+    checklist = [
+        "Rates, fees and ceilings match `sourceText` figure for figure",
+        "Each rate is still attached to the right term and currency",
+        "No product's eligibility or document list lost an item",
+        "No sentence states something ARDB does not publish",
+        "Entries that failed verification are either fixed or left in Khmer",
+    ]
+    parts = [
+        "Consolidated the ARDB corpus into one normalized English knowledge base.",
+        "",
+        "```",
+        summary,
+        "```",
+        "",
+        "## What changed",
+        "",
+        "Each entry's `content` is now English reference text; the verbatim Khmer "
+        "page is retained as `sourceText`, which is **not** sent to Claude at "
+        "draft time and exists so any answer can be traced back to what ARDB "
+        "published.",
+        "",
+        "Figures were converted from Khmer numerals and ARDB's separator "
+        "convention mechanically, before the model saw them, and every entry was "
+        "checked for figure preservation — a dropped or invented number fails the "
+        "entry rather than shipping it.",
+        "",
+        "## Review checklist",
+        "",
+        *(f"- [ ] {item}" for item in checklist),
+    ]
+    if failures:
+        parts += [
+            "",
+            "## Failed verification — review these first",
+            "",
+            *(f"- `{entry_id}`: {reason}" for entry_id, reason in failures),
+        ]
+    return "\n".join(parts)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -84,6 +84,36 @@ describe("buildSystemBlocks", () => {
     expect(instructions).toMatch(/no access to any customer's account/i);
     expect(instructions).toMatch(/never promise/i);
   });
+
+  it("states both number conventions, so 4.00% is never read as 400%", () => {
+    // The corpus is normalized English, but a failed consolidation leaves an
+    // entry in Khmer, where the separators mean the opposite.
+    const instructions = buildSystemBlocks(populated)[0]?.text ?? "";
+    expect(instructions).toMatch(/full stop is the decimal point/i);
+    expect(instructions).toMatch(/COMMA for the decimal point/);
+    expect(instructions).toContain("400%");
+  });
+
+  it("stops an English corpus from pulling answers into English", () => {
+    // Every entry is English now, which is a standing nudge toward replying
+    // in English to Khmer-speaking farmers.
+    const instructions = buildSystemBlocks(populated)[0]?.text ?? "";
+    expect(instructions).toMatch(/not a hint about what language to reply in/i);
+    expect(instructions).toMatch(/reply in Khmer/i);
+  });
+
+  it("never renders retained source text into the prompt", () => {
+    // sourceText doubles the corpus and the model does not read it.
+    const withSource = {
+      ...populated,
+      entries: [
+        { ...populated.entries[0]!, sourceText: "កម្ចីកសិកម្ម ១,៥០%", sourceLanguage: "km" as const },
+      ],
+    };
+    const rendered = buildSystemBlocks(withSource)[1]?.text ?? "";
+    expect(rendered).not.toContain("កម្ចីកសិកម្ម");
+    expect(rendered).not.toContain("១,៥០%");
+  });
 });
 
 describe("buildUserMessage", () => {

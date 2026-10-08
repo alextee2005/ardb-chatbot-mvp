@@ -16,7 +16,18 @@ export interface KnowledgeEntry {
   url: string;
   language: "km" | "en" | "mixed";
   category: string;
+  /** The English reference text. This, and only this, goes into the prompt. */
   content: string;
+  /**
+   * Verbatim Khmer source, present when `content` was rewritten from it.
+   *
+   * Deliberately never rendered into the prompt. It exists so a reviewer can
+   * check a consolidation, and so a bad answer can be traced back months
+   * later to what ARDB actually published. Including it would double the
+   * tokens on every question and defeat the point of consolidating.
+   */
+  sourceText?: string;
+  sourceLanguage?: "km" | "en" | "mixed";
 }
 
 export interface KnowledgeBase {
@@ -43,6 +54,9 @@ export function renderKnowledge(kb: KnowledgeBase): string {
     return "No ARDB source material has been loaded yet. You therefore do not know any ARDB-specific product details, rates, fees or requirements.";
   }
 
+  // `sourceText` is pointedly absent: the corpus is sent in full with every
+  // question, so carrying the Khmer original alongside the English would
+  // double the cost of every draft for material the model does not read.
   const sections = kb.entries.map((entry) =>
     [
       `<document id="${entry.id}">`,

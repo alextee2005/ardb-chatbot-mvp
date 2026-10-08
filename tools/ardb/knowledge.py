@@ -33,7 +33,18 @@ _LATIN_RE = re.compile(r"[A-Za-z]")
 
 @dataclass(frozen=True, slots=True)
 class KnowledgeEntry:
-    """One page of ARDB source material."""
+    """One topic of ARDB source material.
+
+    After consolidation ``content`` is the English reference text and
+    ``source_text`` holds the Khmer page it came from, verbatim.
+
+    The split is deliberate. ``content`` is what the Worker sends to Claude, so
+    the prompt carries one language and one representation. ``source_text``
+    never leaves the file: it exists so a reviewer, or anyone auditing a bad
+    answer months later, can compare what a customer was told against what
+    ARDB actually published. Dropping it would make the consolidation
+    unfalsifiable.
+    """
 
     id: str
     title: str
@@ -41,15 +52,35 @@ class KnowledgeEntry:
     language: Language
     category: str
     content: str
+    #: Verbatim source text, when ``content`` has been rewritten from it.
+    source_text: str | None = None
+    #: Language of ``source_text``.
+    source_language: Language | None = None
 
     def to_dict(self) -> dict[str, str]:
-        return asdict(self)
+        payload = {
+            "id": self.id,
+            "title": self.title,
+            "url": self.url,
+            "language": self.language,
+            "category": self.category,
+            "content": self.content,
+        }
+        # Omitted rather than null when absent, so an un-consolidated corpus
+        # produces the same file it always did.
+        if self.source_text is not None:
+            payload["sourceText"] = self.source_text
+        if self.source_language is not None:
+            payload["sourceLanguage"] = self.source_language
+        return payload
 
     @classmethod
     def from_dict(cls, raw: dict[str, str]) -> KnowledgeEntry:
         missing = {"id", "title", "url", "language", "category", "content"} - raw.keys()
         if missing:
             raise ValueError(f"entry is missing fields: {sorted(missing)}")
+        source_text = raw.get("sourceText")
+        source_language = raw.get("sourceLanguage")
         return cls(
             id=str(raw["id"]),
             title=str(raw["title"]),
@@ -57,11 +88,19 @@ class KnowledgeEntry:
             language=_coerce_language(str(raw["language"])),
             category=str(raw["category"]),
             content=str(raw["content"]),
+            source_text=None if source_text is None else str(source_text),
+            source_language=(
+                None if source_language is None else _coerce_language(str(source_language))
+            ),
         )
 
     @property
     def is_manual(self) -> bool:
         return self.url == MANUAL_URL
+
+    @property
+    def is_consolidated(self) -> bool:
+        return self.source_text is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,7 +133,22 @@ class KnowledgeBase:
 
     @property
     def total_chars(self) -> int:
+        """Characters the Worker actually sends.
+
+        ``source_text`` is excluded: it lives in the file for audit and is
+        never put in a prompt, so counting it would overstate the cost of
+        every question.
+        """
         return sum(len(entry.content) for entry in self.entries)
+
+    @property
+    def archived_chars(self) -> int:
+        """Characters of retained source text. Never sent; file size only."""
+        return sum(len(entry.source_text or "") for entry in self.entries)
+
+    @property
+    def consolidated_count(self) -> int:
+        return sum(1 for entry in self.entries if entry.is_consolidated)
 
     @property
     def estimated_tokens(self) -> int:

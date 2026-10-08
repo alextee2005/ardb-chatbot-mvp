@@ -167,11 +167,14 @@ src/
 tools/                   Python, run on GitHub Actions
 ├── verify_bot.py        Token, privacy setting, webhook, visible chat IDs
 ├── scrape_knowledge.py  Crawl -> knowledge file -> pull-request body
+├── consolidate_knowledge.py  Khmer pages -> one normalized English corpus
 ├── ardb/
 │   ├── knowledge.py     The schema contract with src/core/knowledge.ts
 │   ├── scraper.py       Crawl filters and HTML extraction
+│   ├── normalize.py     Khmer numerals and separators -> English notation
+│   ├── consolidate.py   The restatement call and its figure-preservation guard
 │   └── telegram.py      Read-only Bot API client
-└── tests/               91 tests, including a crawl against a fixture site
+└── tests/               155 tests, including a crawl against a fixture site
 
 .github/workflows/
 ├── ci.yml               Typecheck, both test suites, Worker bundle
@@ -213,6 +216,43 @@ configured group reach the moderator handlers, so anyone who can see a card is
 a moderator by construction. There is no allowlist to drift out of sync with
 the group's membership — add and remove staff in Telegram.
 
+### Consolidation into one English corpus
+
+The scraped pages are Khmer. A second pass restates each one as English
+reference material, so the corpus the Worker sends is one language and one
+representation:
+
+```bash
+ANTHROPIC_API_KEY=... python tools/consolidate_knowledge.py
+ANTHROPIC_API_KEY=... python tools/consolidate_knowledge.py --dry-run
+ANTHROPIC_API_KEY=... python tools/consolidate_knowledge.py --only faq --force
+```
+
+The **Scrape knowledge base** workflow runs this automatically (uncheck
+*consolidate* to skip it); it needs an `ANTHROPIC_API_KEY` repository secret.
+
+This deliberately puts a model between what ARDB publishes and what a customer
+is told, which is a real risk: a mistranslated rate reads exactly like a
+correct one, so a moderator approving by eye cannot catch it. Four things hold
+it down.
+
+1. **Figures never reach the model in Khmer form.** `tools/ardb/normalize.py`
+   converts Khmer numerals and ARDB's separator convention first, so the step
+   most likely to produce a wrong number has no model in it. That conversion
+   is pure and has 36 tests of its own.
+2. **Every entry is checked for figure preservation** against its source. A
+   figure the source states and the output dropped, or one the output states
+   from nowhere, fails that entry.
+3. **A failed entry keeps its Khmer text** rather than shipping an unverified
+   rewrite, and is named in the pull request for review.
+4. **The Khmer source is retained** as `sourceText` on every consolidated
+   entry. It is never sent to Claude — the Worker renders only `content` —
+   but it means a bad answer can always be traced back to what ARDB actually
+   published. Without it the consolidation would be unfalsifiable.
+
+Entries already consolidated are skipped unless `--force`, so a re-run after a
+partial failure costs only what failed.
+
 ### Reading ARDB's numbers
 
 The source pages write figures in Khmer numerals with a comma for the decimal
@@ -236,7 +276,9 @@ them out of the Worker also keeps the deployed bundle small and its egress
 surface to exactly two hosts: Telegram and the Claude API.
 
 `tools/ardb/knowledge.py` owns the schema contract with
-`src/core/knowledge.ts`. The Worker imports the JSON at build time, so a drift
+`src/core/knowledge.ts`. After consolidation an entry's `content` is English
+and `sourceText` holds the Khmer original; only `content` is rendered into the
+prompt. The Worker imports the JSON at build time, so a drift
 between them breaks deployment rather than failing at runtime — CI asserts the
 committed file parses, has unique IDs, and is sorted.
 
