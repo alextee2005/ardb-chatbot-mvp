@@ -233,9 +233,14 @@ The **Scrape knowledge base** workflow runs this automatically (uncheck
 
 > **If the key is organization-level rather than workspace-scoped**, it will
 > authenticate and then every request fails with *"This API key is not scoped
-> to a workspace"*. Either create a workspace-scoped key in the Console, or
-> add the workspace ID as an `ANTHROPIC_WORKSPACE_ID` secret — the client
-> sends it as the `anthropic-workspace-id` header.
+> to a workspace"*. Two ways out, and the first is simpler:
+>
+> 1. Create an API key **scoped to a workspace** in the Console. A scoped key
+>    needs no header and no extra secret.
+> 2. Or add an `ANTHROPIC_WORKSPACE_ID` secret. It must be the workspace
+>    **ID**, not its name — `wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ`, found in the
+>    Console under Settings → Workspaces in the ID column. A name is rejected
+>    locally with that explanation rather than becoming a 400 from the API.
 
 A single minimal request runs before the loop. Any credential, billing, model
 or workspace problem surfaces there, in one second, carrying the API's own

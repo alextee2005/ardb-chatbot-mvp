@@ -90,7 +90,18 @@ jobs:
             exit 1
           fi
           if [ -n "${ANTHROPIC_WORKSPACE_ID:-}" ]; then
-            echo "Scoping requests to workspace ${ANTHROPIC_WORKSPACE_ID}."
+            # The header takes the workspace ID, not its name. A name is the
+            # obvious thing to paste in, and the API's rejection of one is a
+            # bare 400 well removed from the secret that caused it.
+            case "${ANTHROPIC_WORKSPACE_ID}" in
+              wrkspc_*)
+                echo "Scoping requests to workspace ${ANTHROPIC_WORKSPACE_ID}."
+                ;;
+              *)
+                echo "::error::ANTHROPIC_WORKSPACE_ID is not a workspace ID. It must look like wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ, which the Console shows under Settings → Workspaces in the ID column — not the workspace name. Simpler: create a workspace-scoped API key and delete this secret."
+                exit 1
+                ;;
+            esac
           fi
           case "${ANTHROPIC_API_KEY}" in
             sk-ant-*) ;;

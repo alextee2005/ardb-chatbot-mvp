@@ -21,6 +21,7 @@ like a correct one. Three things hold it down.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 
 import anthropic
@@ -103,6 +104,13 @@ _FATAL_BAD_REQUEST_SIGNALS = (
 )
 
 
+#: A workspace ID, e.g. wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ. Checked here because
+#: the workspace *name* is the obvious thing to reach for and the API's own
+#: rejection of a name is a bare 400 several steps removed from the setting
+#: that caused it.
+_WORKSPACE_ID_RE = re.compile(r"^wrkspc_[A-Za-z0-9]+$")
+
+
 def build_client(
     *, api_key: str | None = None, workspace_id: str | None = None
 ) -> anthropic.Anthropic:
@@ -112,8 +120,26 @@ def build_client(
     the Messages API then rejects every request unless the request names one.
     The SDK treats ``anthropic-workspace-id`` as a client-level header, so
     setting it here covers every call.
+
+    Raises ``FatalConsolidationError`` when the value is not a workspace ID.
+    The header takes the ID, not the workspace's name, and passing a name
+    earns a 400 from the API -- correct but unhelpful, because it arrives
+    without saying which setting is wrong or where the right value lives.
     """
-    headers = {"anthropic-workspace-id": workspace_id} if workspace_id else None
+    if workspace_id and not _WORKSPACE_ID_RE.match(workspace_id.strip()):
+        raise FatalConsolidationError(
+            f"ANTHROPIC_WORKSPACE_ID is {workspace_id!r}, which is not a "
+            "workspace ID. The header takes the ID, not the workspace name: "
+            "it looks like wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ, and the Console "
+            "shows it under Settings -> Workspaces in the ID column.\n"
+            "Simpler alternative: create an API key scoped to that workspace "
+            "and leave ANTHROPIC_WORKSPACE_ID unset -- a scoped key needs no "
+            "header at all."
+        )
+
+    headers = (
+        {"anthropic-workspace-id": workspace_id.strip()} if workspace_id else None
+    )
     return anthropic.Anthropic(api_key=api_key, default_headers=headers)
 
 

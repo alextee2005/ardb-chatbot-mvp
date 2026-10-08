@@ -391,3 +391,55 @@ class TestCredentialPreflight:
         )
         with pytest.raises(FatalConsolidationError, match="ANTHROPIC_API_KEY"):
             verify_credentials(client)
+
+
+class TestWorkspaceIdValidation:
+    """The workspace header takes an ID, not a name. Pasting the name is the
+    obvious mistake, and the API's 400 lands well away from the secret."""
+
+    def test_rejects_the_workspace_name(self):
+        from ardb.consolidate import build_client
+
+        with pytest.raises(FatalConsolidationError) as caught:
+            build_client(api_key="sk-ant-test", workspace_id="ardb-chatbot-mvp")
+
+        message = str(caught.value)
+        assert "not a workspace ID" in message
+        # Must say where the real value lives, not just that this one is wrong.
+        assert "Settings -> Workspaces" in message
+        assert "wrkspc_" in message
+
+    def test_accepts_a_real_workspace_id(self):
+        from ardb.consolidate import build_client
+
+        client = build_client(
+            api_key="sk-ant-test", workspace_id="wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ"
+        )
+        assert (
+            client.default_headers["anthropic-workspace-id"]
+            == "wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ"
+        )
+
+    def test_trims_surrounding_whitespace(self):
+        # A secret pasted with a trailing newline should still work.
+        from ardb.consolidate import build_client
+
+        client = build_client(api_key="sk-ant-test", workspace_id="  wrkspc_01ABC  ")
+        assert client.default_headers["anthropic-workspace-id"] == "wrkspc_01ABC"
+
+    @pytest.mark.parametrize(
+        "value",
+        ["ardb-chatbot-mvp", "wrkspc", "wrkspc_", "my workspace", "01JwQvzr", "wrkspc-01ABC"],
+    )
+    def test_rejects_anything_that_is_not_an_id(self, value):
+        from ardb.consolidate import build_client
+
+        with pytest.raises(FatalConsolidationError):
+            build_client(api_key="sk-ant-test", workspace_id=value)
+
+    def test_an_empty_value_is_treated_as_unset(self):
+        # An empty repository secret must not look like a malformed one.
+        from ardb.consolidate import build_client
+
+        client = build_client(api_key="sk-ant-test", workspace_id="")
+        assert "anthropic-workspace-id" not in client.default_headers

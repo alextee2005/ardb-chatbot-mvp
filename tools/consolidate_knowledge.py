@@ -86,7 +86,11 @@ def main() -> int:
         print(f"{args.input} has no entries. Run the scraper first.", file=sys.stderr)
         return 2
 
-    client = build_client(workspace_id=os.environ.get("ANTHROPIC_WORKSPACE_ID"))
+    try:
+        client = build_client(workspace_id=os.environ.get("ANTHROPIC_WORKSPACE_ID"))
+    except FatalConsolidationError as error:
+        print(f"{error}", file=sys.stderr)
+        return 2
 
     selected = [
         entry
