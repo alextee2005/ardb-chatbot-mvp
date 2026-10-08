@@ -85,33 +85,54 @@ npm run migrate
 
 ### 3. Knowledge base
 
-**This is the step that decides whether the bot is useful.** The committed
-`knowledge/ardb-knowledge.json` is an empty placeholder, and while it stays
-empty Claude is instructed to say it has no ARDB-specific details — so drafts
-will be honest and nearly useless.
+**This is what decides whether the bot is useful.** It is already populated —
+33 ARDB pages, all restated in English — and it is kept current by two
+workflows that run in sequence.
 
-Run the **Scrape knowledge base** workflow. It crawls www.ardb.com.kh and
-opens a pull request with the result and a review checklist — deliberately a
-pull request, not a direct commit, because an unreviewed knowledge file is how
-a navigation blob or a wrong interest rate reaches a customer.
+```
+www.ardb.com.kh ──1──▶ knowledge/raw/ardb-raw.json ──2──▶ knowledge/corpus/ardb-corpus.json ──▶ the bot
+                       as published (Khmer/English)        one language, reviewed
+```
+
+| | workflow | writes | the bot |
+| --- | --- | --- | --- |
+| **1** | Scrape ARDB pages (stage 1) | `knowledge/raw/` | unaffected |
+| **2** | Build corpus (stage 2) | `knowledge/corpus/` | answers from this |
+
+Stage 1 archives the pages exactly as ARDB publishes them and stops. Stage 2
+converts that archive into the single-language corpus the Worker imports, and
+runs automatically once a stage 1 pull request lands on the default branch.
+Both open pull requests rather than committing directly, because an unreviewed
+knowledge file is how a navigation blob or a wrong interest rate reaches a
+customer.
+
+Keeping the two apart is the point. While one file served both purposes, a
+re-scrape silently replaced reviewed English with raw Khmer — and the prompt
+kept telling Claude the source material was English. Now a scrape cannot
+change anything a customer sees; only a merged stage 2 can.
 
 > **One repository setting.** `GITHUB_TOKEN` cannot open a pull request unless
 > *Settings → Actions → General → Workflow permissions → Allow GitHub Actions
 > to create and approve pull requests* is enabled, and it is off by default.
-> Without it the workflow still scrapes and pushes the branch, then prints a
-> one-click link to open the pull request yourself — the scrape is never lost
-> to that setting.
+> Without it a workflow still does its work and pushes the branch, then prints
+> a one-click link to open the pull request yourself — nothing is lost to that
+> setting.
 
 Locally instead:
 
 ```bash
 pip install -r tools/requirements.txt
-python tools/scrape_knowledge.py --dry-run   # see what it would keep
-python tools/scrape_knowledge.py             # write it
+python tools/scrape_knowledge.py --dry-run   # stage 1: see what it would keep
+python tools/scrape_knowledge.py             # stage 1: write the archive
+python tools/build_corpus.py                 # stage 2: build the corpus
+python tools/build_corpus.py --check         # is the corpus current?
 ```
 
-See `knowledge/README.md` for the format and for hand-written entries, which
-survive a re-scrape and override a scraped page of the same ID.
+`knowledge/HISTORY.jsonl` is the ledger: one line per scrape and per build,
+with its timestamp, entry count, content digest and — for a build — the
+archive it came from. See `knowledge/README.md` for the format, for
+hand-written entries, and for the two products where ARDB's own pages publish
+different interest rates.
 
 ### 4. Secrets and deploy
 
@@ -164,22 +185,32 @@ src/
     ├── moderator.ts     Button taps and edited answers
     └── sla.ts           The scheduled sweep over stalled tickets
 
+knowledge/
+├── raw/ardb-raw.json       Stage 1: the pages as ARDB published them
+├── corpus/ardb-corpus.json Stage 2: one language, what the Worker imports
+├── HISTORY.jsonl           Ledger: every scrape and build, with timestamps
+└── restatements/           The English, hand-written and figure-checked
+
 tools/                   Python, run on GitHub Actions
 ├── verify_bot.py        Token, privacy setting, webhook, visible chat IDs
-├── scrape_knowledge.py  Crawl -> knowledge file -> pull-request body
-├── consolidate_knowledge.py  Khmer pages -> one normalized English corpus
+├── scrape_knowledge.py  Stage 1: crawl -> raw archive -> pull-request body
+├── build_corpus.py      Stage 2: raw archive -> English corpus (no network)
+├── consolidate_knowledge.py  Stage 2 via Claude, for pages with no restatement
 ├── ardb/
 │   ├── knowledge.py     The schema contract with src/core/knowledge.ts
 │   ├── scraper.py       Crawl filters and HTML extraction
 │   ├── normalize.py     Khmer numerals and separators -> English notation
 │   ├── consolidate.py   The restatement call and its figure-preservation guard
 │   └── telegram.py      Read-only Bot API client
-└── tests/               155 tests, including a crawl against a fixture site
+└── tests/               234 tests, including a crawl against a fixture site
 
-.github/workflows/
-├── ci.yml               Typecheck, both test suites, Worker bundle
-├── verify-bot.yml        Manual bot verification
-└── scrape-knowledge.yml  Manual or monthly re-scrape, opens a PR
+.github/
+├── actions/open-pr/      Commit, push, open a PR; degrades to a link
+└── workflows/
+    ├── ci.yml            Typecheck, both test suites, Worker bundle, corpus checks
+    ├── verify-bot.yml    Manual bot verification
+    ├── scrape-knowledge.yml  Stage 1: manual or monthly, opens a PR
+    └── build-corpus.yml  Stage 2: on a merged stage 1, or manual
 ```
 
 `core/` imports nothing platform-specific, which is what makes a move off
@@ -218,9 +249,18 @@ the group's membership — add and remove staff in Telegram.
 
 ### Consolidation into one English corpus
 
-The scraped pages are Khmer. A second pass restates each one as English
+ARDB publishes mostly in Khmer. Stage 2 restates every page as English
 reference material, so the corpus the Worker sends is one language and one
-representation:
+representation.
+
+`tools/build_corpus.py` is the primary route and needs no API key: the English
+lives in `knowledge/restatements/`, written by reading each page, and the
+build is a pure function of two files already in git — the same archive and
+the same restatements always produce the same corpus, which CI asserts.
+
+`tools/consolidate_knowledge.py` is the paid route, for a page no restatement
+module covers. It restates with Claude under the same figure-preservation
+guard:
 
 ```bash
 ANTHROPIC_API_KEY=... python tools/consolidate_knowledge.py
@@ -228,8 +268,9 @@ ANTHROPIC_API_KEY=... python tools/consolidate_knowledge.py --dry-run
 ANTHROPIC_API_KEY=... python tools/consolidate_knowledge.py --only faq --force
 ```
 
-The **Scrape knowledge base** workflow runs this automatically (uncheck
-*consolidate* to skip it); it needs an `ANTHROPIC_API_KEY` repository secret.
+It needs an `ANTHROPIC_API_KEY` repository secret. No workflow runs it
+automatically: a step that spends money on every scrape is the wrong default
+when the hand-written route is free and reproducible.
 
 > **If the key is organization-level rather than workspace-scoped**, it will
 > authenticate and then every request fails with *"This API key is not scoped
@@ -263,10 +304,12 @@ it down.
    translations — and failing good output trains people to ignore the check.
 3. **A failed entry keeps its Khmer text** rather than shipping an unverified
    rewrite, and is named in the pull request for review.
-4. **The Khmer source is retained** as `sourceText` on every consolidated
-   entry. It is never sent to Claude — the Worker renders only `content` —
-   but it means a bad answer can always be traced back to what ARDB actually
-   published. Without it the consolidation would be unfalsifiable.
+4. **The published page is retained twice over.** `sourceText` on every
+   restated entry holds it verbatim, and `knowledge/raw/` holds the whole
+   archive independently of any corpus. Neither is ever sent to Claude — the
+   Worker renders only `content` — but between them a bad answer can always be
+   traced back to what ARDB actually published. Without that the restatement
+   would be unfalsifiable.
 
 Entries already consolidated are skipped unless `--force`, so a re-run after a
 partial failure costs only what failed.

@@ -5,11 +5,16 @@ each Khmer page directly rather than by calling the Claude API. They exist
 because `tools/consolidate_knowledge.py` needs API credits, and the work does
 not: the pages are already in this repository.
 
-Apply them with:
+They are stage 2 of the knowledge pipeline, applied by:
 
 ```bash
-python tools/apply_restatements.py english_batch1 english_batch2 english_batch3 english_batch4
+python tools/build_corpus.py
 ```
+
+Modules here are **discovered automatically** — a new batch needs no argument
+and no registration. Listing them on a command line was how a batch got left
+off, and a batch left off means pages stay Khmer in a corpus the prompt
+describes as English.
 
 The same contract as the automated consolidator applies, and is enforced the
 same way:
@@ -25,10 +30,11 @@ already caught a real omission: the agro-enterprise page has five loan
 variants, and the first draft of that entry described four, dropping the
 overdraft facility capped at 1,000,000 US dollars.
 
-Re-running is safe. An entry that already carries a restatement is checked
-against its retained `sourceText` rather than against the English now in
-`content`, and keeps the original Khmer, so a second pass cannot overwrite the
-audit trail with the translation.
+Re-running is safe, and re-running is in fact the only way the corpus is ever
+written. Every build starts from `knowledge/raw/ardb-raw.json` — the pages as
+published — rather than from the previous corpus, so a build can never restate
+a translation or compare a restatement against itself. CI asserts that
+rebuilding the committed archive reproduces the committed corpus exactly.
 
 ## The four batches
 
@@ -70,7 +76,10 @@ output.
 
 ## Updating
 
-Re-scraping replaces `content` with fresh Khmer and drops `sourceText`, so a
-re-scrape undoes these restatements and they must be re-applied. If the page
-changed, the figure check will fail the stale entry rather than let an
-out-of-date rate through — which is the behaviour we want.
+A re-scrape writes the archive and leaves the corpus alone, so these
+restatements are never undone by one. What a re-scrape can do is make one
+*stale*: if ARDB changed a figure on a page, the figure check fails that
+restatement on the next build, and the page is carried into the corpus in its
+published Khmer rather than with an out-of-date English rate. That failure is
+the signal to re-read the page and rewrite the entry — the check is doing its
+job, not getting in the way.

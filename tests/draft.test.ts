@@ -58,6 +58,35 @@ describe("renderKnowledge", () => {
   it("is byte-stable across calls, so the prompt cache can hit", () => {
     expect(renderKnowledge(populated)).toBe(renderKnowledge(populated));
   });
+
+  it("dates the material by the scrape, not by the corpus build", () => {
+    // A moderator asking how old a rate is wants to know when ARDB's page was
+    // read. Rebuilding the corpus -- which happens whenever a restatement is
+    // edited -- does not make the underlying pages any fresher, so reporting
+    // the build date would overstate the freshness of every figure.
+    const rebuilt: KnowledgeBase = {
+      ...populated,
+      version: "2026-12-01-2-en",
+      generatedAt: "2026-12-01T00:00:00.000Z",
+      stage: "corpus",
+      builtFrom: {
+        version: "2026-10-07-2",
+        generatedAt: "2026-10-07T00:00:00.000Z",
+        digest: "43dade5c8902820e",
+        source: "https://www.ardb.com.kh",
+      },
+    };
+
+    const rendered = renderKnowledge(rebuilt);
+    expect(rendered).toContain("scraped from https://www.ardb.com.kh on 2026-10-07T00:00:00.000Z");
+    expect(rendered).not.toContain("2026-12-01T00:00:00.000Z");
+    // The corpus version still identifies which build produced a draft.
+    expect(rendered).toContain("2026-12-01-2-en");
+  });
+
+  it("falls back to generatedAt when there is no provenance", () => {
+    expect(renderKnowledge(populated)).toContain("on 2026-10-07T00:00:00.000Z");
+  });
 });
 
 describe("buildSystemBlocks", () => {

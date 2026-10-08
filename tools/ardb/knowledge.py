@@ -1,10 +1,26 @@
-"""The knowledge-base file: schema, classification, and merge rules.
+"""The knowledge files: schema, classification, and merge rules.
 
-This module owns the contract with the Worker. `knowledge/ardb-knowledge.json`
-is imported directly by `src/worker.ts` and parsed as the `KnowledgeBase`
-interface in `src/core/knowledge.ts`, so the field names and the `language`
-values here must match that interface exactly. Changing one without the other
-breaks the deployed bot at build time.
+There are two of them, written by two separate steps, and the distinction is
+the whole point of the layout:
+
+``knowledge/raw/ardb-raw.json``
+    Stage 1. ARDB's pages exactly as published -- Khmer where ARDB wrote
+    Khmer -- with nothing translated or rewritten. Written only by the
+    scraper. This is the archive: if a restatement is ever disputed, this is
+    the evidence.
+
+``knowledge/corpus/ardb-corpus.json``
+    Stage 2. Built *from* the raw snapshot by restating every page in English.
+    ``content`` is the English the bot sends; ``sourceText`` is the raw page it
+    came from. Carries ``builtFrom``, naming the exact raw snapshot it was
+    built from, so a corpus can always be traced to its source and a corpus
+    left behind by a newer scrape can be detected.
+
+This module owns the contract with the Worker. The corpus file is imported
+directly by `src/worker.ts` and parsed as the `KnowledgeBase` interface in
+`src/core/knowledge.ts`, so the field names and the `language` values here
+must match that interface exactly. Changing one without the other breaks the
+deployed bot at build time.
 """
 
 from __future__ import annotations
@@ -19,6 +35,25 @@ from typing import Iterable, Literal
 from urllib.parse import unquote, urlparse
 
 Language = Literal["km", "en", "mixed"]
+
+#: Which of the two files this is. Recorded in the file itself so a path
+#: mix-up -- scraping over the corpus, say -- is caught by reading one field
+#: rather than by noticing the Khmer came back.
+Stage = Literal["raw", "corpus"]
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+#: Stage 1 output: the pages as published. Never contains a translation.
+RAW_PATH = REPO_ROOT / "knowledge" / "raw" / "ardb-raw.json"
+
+#: Stage 2 output: the English corpus the Worker imports and sends to Claude.
+CORPUS_PATH = REPO_ROOT / "knowledge" / "corpus" / "ardb-corpus.json"
+
+#: Append-only ledger of every scrape and every build, with timestamps.
+#: Git already versions the two files; this is the readable index over that
+#: history -- what ran, when, how much it found, and which raw snapshot each
+#: corpus came from -- without checking out old commits to find out.
+HISTORY_PATH = REPO_ROOT / "knowledge" / "HISTORY.jsonl"
 
 #: Marker in the ``url`` field for hand-written entries. These are authored by
 #: staff to correct or supplement a scrape and must survive re-scraping.
@@ -104,31 +139,106 @@ class KnowledgeEntry:
 
 
 @dataclass(frozen=True, slots=True)
+class Provenance:
+    """Which snapshot a file was built from.
+
+    The digest is what makes this more than a comment. A version string is
+    date-plus-entry-count, so two different scrapes on the same day that keep
+    the same number of pages share a version; the digest does not. Comparing
+    ``built_from.digest`` against the raw file's own digest is how a corpus
+    that a later scrape has left behind is detected.
+    """
+
+    version: str
+    generated_at: str
+    digest: str
+    source: str = ""
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "version": self.version,
+            "generatedAt": self.generated_at,
+            "digest": self.digest,
+            "source": self.source,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, object]) -> Provenance:
+        return cls(
+            version=str(raw.get("version", "")),
+            generated_at=str(raw.get("generatedAt", "")),
+            digest=str(raw.get("digest", "")),
+            source=str(raw.get("source", "")),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class KnowledgeBase:
     version: str
     generated_at: str
     source: str
     entries: tuple[KnowledgeEntry, ...]
+    stage: Stage = "raw"
+    #: Set on a corpus: the raw snapshot it was built from. Never set on raw,
+    #: which is built from the website.
+    built_from: Provenance | None = None
 
     def to_dict(self) -> dict[str, object]:
         # camelCase on the way out: this is the shape TypeScript reads.
-        return {
+        payload: dict[str, object] = {
             "version": self.version,
             "generatedAt": self.generated_at,
             "source": self.source,
-            "entries": [entry.to_dict() for entry in self.entries],
+            "stage": self.stage,
         }
+        if self.built_from is not None:
+            payload["builtFrom"] = self.built_from.to_dict()
+        payload["entries"] = [entry.to_dict() for entry in self.entries]
+        return payload
 
     @classmethod
     def from_dict(cls, raw: dict[str, object]) -> KnowledgeBase:
         entries = raw.get("entries") or []
         if not isinstance(entries, list):
             raise ValueError("entries must be a list")
+        built_from = raw.get("builtFrom")
+        stage = str(raw.get("stage", "")) or None
         return cls(
             version=str(raw.get("version", "")),
             generated_at=str(raw.get("generatedAt", "")),
             source=str(raw.get("source", "")),
             entries=tuple(KnowledgeEntry.from_dict(item) for item in entries),
+            stage=stage if stage in ("raw", "corpus") else "raw",
+            built_from=(
+                Provenance.from_dict(built_from)
+                if isinstance(built_from, dict)
+                else None
+            ),
+        )
+
+    @property
+    def digest(self) -> str:
+        """Content fingerprint over the entries alone.
+
+        Deliberately excludes ``version``, ``generated_at`` and ``stage``: a
+        re-scrape that finds the site unchanged must produce the same digest,
+        or every re-run would look like new data and mark the corpus stale.
+        """
+        payload = json.dumps(
+            [entry.to_dict() for entry in self.entries],
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+    @property
+    def provenance(self) -> Provenance:
+        """This file, as the thing a later stage was built from."""
+        return Provenance(
+            version=self.version,
+            generated_at=self.generated_at,
+            digest=self.digest,
+            source=self.source,
         )
 
     @property
@@ -160,6 +270,52 @@ class KnowledgeBase:
         considerably worse than English.
         """
         return round(self.total_chars / 3.5)
+
+    @property
+    def english_count(self) -> int:
+        return sum(1 for entry in self.entries if entry.language == "en")
+
+    @property
+    def pending(self) -> tuple[KnowledgeEntry, ...]:
+        """Entries the corpus build has not yet restated in English.
+
+        These still carry their published language, so the bot would be
+        sending Khmer to a model told the source material is English. They are
+        what stage 2 reports as outstanding.
+        """
+        return tuple(entry for entry in self.entries if entry.language != "en")
+
+
+def append_history(record: dict[str, object], path: Path = HISTORY_PATH) -> None:
+    """Add one line to the run ledger.
+
+    JSON Lines rather than a JSON array: appending a line never rewrites the
+    ones before it, so two runs landing in the same pull request conflict on
+    the tail instead of on the whole file, and `git log -p` on this path reads
+    as a list of events.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(record, ensure_ascii=False, sort_keys=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(line + "\n")
+
+
+def read_history(path: Path = HISTORY_PATH) -> tuple[dict[str, object], ...]:
+    """The ledger, oldest first. A malformed line is skipped, not fatal."""
+    if not path.exists():
+        return ()
+    records = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            records.append(parsed)
+    return tuple(records)
 
 
 def _coerce_language(value: str) -> Language:

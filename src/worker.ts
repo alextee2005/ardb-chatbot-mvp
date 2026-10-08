@@ -10,7 +10,9 @@
  * Claude call inside `waitUntil` is comfortable even on the free plan.
  */
 
-import knowledgeJson from "../knowledge/ardb-knowledge.json";
+// The built corpus, not the raw archive: `tools/build_corpus.py` turns one
+// into the other, and only the corpus is single-language and reviewed.
+import knowledgeJson from "../knowledge/corpus/ardb-corpus.json";
 
 import { Store } from "./adapters/store.js";
 import { TelegramClient } from "./adapters/telegram.js";

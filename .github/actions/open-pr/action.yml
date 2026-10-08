@@ -1,0 +1,105 @@
+name: Commit, push and open a pull request
+description: >
+  Commits the given paths to a new branch, pushes it, and opens a pull request.
+  A repository that has not enabled "Allow GitHub Actions to create and approve
+  pull requests" refuses the last step; that is treated as a degraded success
+  with a one-click link rather than a failed run, because by then the work is
+  already safe on the remote.
+
+inputs:
+  branch:
+    description: Branch name to create and push.
+    required: true
+  title:
+    description: Commit message and pull request title.
+    required: true
+  body-file:
+    description: File holding the pull request body, as Markdown.
+    required: true
+  paths:
+    description: Space-separated paths to commit.
+    required: true
+  token:
+    description: Token for `gh pr create`.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        BRANCH: ${{ inputs.branch }}
+        TITLE: ${{ inputs.title }}
+        BODY_FILE: ${{ inputs.body-file }}
+        PATHS: ${{ inputs.paths }}
+      run: |
+        set -euo pipefail
+
+        git config user.name  "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git checkout -b "${BRANCH}"
+        # Word splitting is intended: PATHS is a space-separated list.
+        # shellcheck disable=SC2086
+        git add ${PATHS}
+        git commit -m "${TITLE}"
+        git push --set-upstream origin "${BRANCH}"
+
+        # The branch is now safe on the remote, so the work cannot be lost
+        # from here on. Opening the pull request is the part that can be
+        # refused: GITHUB_TOKEN cannot create one unless "Allow GitHub Actions
+        # to create and approve pull requests" is enabled in Settings ->
+        # Actions -> General, and that is off by default.
+        #
+        # The body comes from a file written by the tool that did the work: a
+        # heredoc here would carry this YAML's indentation into the Markdown
+        # and render every line as a code block.
+        compare_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/${GITHUB_REF_NAME}...${BRANCH}?expand=1"
+
+        if gh pr create \
+            --title "${TITLE}" \
+            --body-file "${BODY_FILE}" \
+            --base "${GITHUB_REF_NAME}" \
+            --head "${BRANCH}" 2> "${RUNNER_TEMP}/pr-error.txt"; then
+          echo "Pull request opened."
+          {
+            echo "### Pull request opened"
+            echo
+            gh pr view "${BRANCH}" --json url --jq .url
+          } >> "${GITHUB_STEP_SUMMARY}"
+          exit 0
+        fi
+
+        cat "${RUNNER_TEMP}/pr-error.txt"
+
+        if grep -qi "not permitted to create or approve pull requests" "${RUNNER_TEMP}/pr-error.txt"; then
+          {
+            echo "### Branch pushed — open the pull request manually"
+            echo
+            echo "The run succeeded and \`${BRANCH}\` is pushed. GitHub refused"
+            echo "to let Actions open the pull request, which is the default"
+            echo "for a repository."
+            echo
+            echo "**[Open the pull request](${compare_url})**"
+            echo
+            echo "To let future runs open it automatically, enable"
+            echo "*Settings → Actions → General → Workflow permissions →"
+            echo "Allow GitHub Actions to create and approve pull requests*."
+          } >> "${GITHUB_STEP_SUMMARY}"
+          echo "::warning::Branch ${BRANCH} pushed, but Actions is not permitted to open pull requests. Open it at ${compare_url}"
+          exit 0
+        fi
+
+        # Any other failure is a real one.
+        {
+          echo "### Pull request could not be opened"
+          echo
+          echo "Branch \`${BRANCH}\` is pushed. \`gh pr create\` failed:"
+          echo
+          echo '```'
+          cat "${RUNNER_TEMP}/pr-error.txt"
+          echo '```'
+          echo
+          echo "**[Open it manually](${compare_url})**"
+        } >> "${GITHUB_STEP_SUMMARY}"
+        exit 1

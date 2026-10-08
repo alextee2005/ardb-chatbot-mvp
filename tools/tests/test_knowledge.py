@@ -1,8 +1,9 @@
 """Tests for the knowledge-file contract.
 
-The Worker imports knowledge/ardb-knowledge.json directly, so a drift between
-this schema and src/core/knowledge.ts breaks the deployed bot at build time.
-These tests pin the shape.
+The Worker imports knowledge/corpus/ardb-corpus.json directly, so a drift
+between this schema and src/core/knowledge.ts breaks the deployed bot at build
+time. These tests pin the shape, and the two-stage provenance that tells a
+corpus apart from the archive it was built from.
 """
 
 from __future__ import annotations
@@ -172,7 +173,7 @@ class TestSchemaContract:
         )
         payload = base.to_dict()
 
-        assert set(payload) == {"version", "generatedAt", "source", "entries"}
+        assert set(payload) == {"version", "generatedAt", "source", "stage", "entries"}
         assert set(payload["entries"][0]) == {
             "id",
             "title",
@@ -201,12 +202,11 @@ class TestSchemaContract:
         restored = kb.KnowledgeEntry.from_dict({**entry().to_dict(), "language": "fr"})
         assert restored.language == "en"
 
-    def test_committed_file_matches_the_schema(self, tmp_path):
-        from pathlib import Path
-
-        committed = Path(__file__).resolve().parents[2] / "knowledge" / "ardb-knowledge.json"
-        parsed = kb.load(committed)
-        assert parsed.source.startswith("https://")
+    def test_committed_files_match_the_schema(self):
+        for path in (kb.RAW_PATH, kb.CORPUS_PATH):
+            parsed = kb.load(path)
+            assert parsed.entries, f"{path} is empty"
+            assert parsed.source.startswith("https://")
 
     def test_written_file_keeps_khmer_readable(self, tmp_path):
         # Escaped Khmer would make a pull request unreviewable.
@@ -333,8 +333,8 @@ class TestDisplayPath:
     def test_repo_relative_inside_the_repo(self):
         from consolidate_knowledge import REPO_ROOT, _display_path
 
-        shown = _display_path(REPO_ROOT / "knowledge" / "ardb-knowledge.json")
-        assert shown == "knowledge/ardb-knowledge.json"
+        shown = _display_path(REPO_ROOT / "knowledge" / "corpus" / "ardb-corpus.json")
+        assert shown == "knowledge/corpus/ardb-corpus.json"
 
     def test_absolute_outside_the_repo_rather_than_raising(self, tmp_path):
         from consolidate_knowledge import _display_path
@@ -346,3 +346,131 @@ class TestDisplayPath:
         from scrape_knowledge import _display_path
 
         assert _display_path(tmp_path / "x.json") == str(tmp_path / "x.json")
+
+
+class TestStageAndProvenance:
+    """The two files are told apart by a field, not by their path.
+
+    A path mix-up is the failure this guards: scraping over the corpus, or
+    building a corpus from a corpus. Both are a one-word mistake in a
+    workflow, and both are silent without `stage`.
+    """
+
+    def test_stage_defaults_to_raw(self):
+        base = kb.KnowledgeBase(
+            version="1", generated_at="now", source="https://x", entries=(entry(),)
+        )
+        assert base.stage == "raw"
+        assert base.to_dict()["stage"] == "raw"
+
+    def test_built_from_is_omitted_when_absent(self):
+        base = kb.KnowledgeBase(
+            version="1", generated_at="now", source="https://x", entries=(entry(),)
+        )
+        assert "builtFrom" not in base.to_dict()
+
+    def test_round_trip_preserves_stage_and_provenance(self):
+        corpus = kb.KnowledgeBase(
+            version="2026-10-08-1-en",
+            generated_at="2026-10-08T00:00:00Z",
+            source="https://www.ardb.com.kh",
+            entries=(entry(),),
+            stage="corpus",
+            built_from=kb.Provenance(
+                version="2026-10-08-1",
+                generated_at="2026-10-07T00:00:00Z",
+                digest="abc123",
+                source="https://www.ardb.com.kh",
+            ),
+        )
+        reloaded = kb.KnowledgeBase.from_dict(json.loads(json.dumps(corpus.to_dict())))
+        assert reloaded.stage == "corpus"
+        assert reloaded.built_from == corpus.built_from
+
+    def test_an_unknown_stage_reads_as_raw(self):
+        # Treating a corrupt value as "corpus" would let a scrape be
+        # mistaken for reviewed English. "raw" is the safe reading.
+        parsed = kb.KnowledgeBase.from_dict({"stage": "nonsense", "entries": []})
+        assert parsed.stage == "raw"
+
+    def test_a_file_without_a_stage_reads_as_raw(self):
+        parsed = kb.KnowledgeBase.from_dict({"entries": []})
+        assert parsed.stage == "raw"
+
+
+class TestDigest:
+    def test_digest_ignores_version_and_timestamp(self):
+        # A re-scrape that finds the site unchanged must produce the same
+        # digest, or every re-run would mark the corpus stale.
+        first = kb.KnowledgeBase(
+            version="2026-10-08-1", generated_at="A", source="s", entries=(entry(),)
+        )
+        second = kb.KnowledgeBase(
+            version="2026-11-01-1", generated_at="B", source="s", entries=(entry(),)
+        )
+        assert first.digest == second.digest
+
+    def test_digest_changes_with_content(self):
+        first = kb.KnowledgeBase(
+            version="1", generated_at="A", source="s", entries=(entry(),)
+        )
+        second = kb.KnowledgeBase(
+            version="1",
+            generated_at="A",
+            source="s",
+            entries=(entry(content="Rates have changed."),),
+        )
+        assert first.digest != second.digest
+
+    def test_provenance_carries_this_file_s_digest(self):
+        base = kb.KnowledgeBase(
+            version="v", generated_at="t", source="s", entries=(entry(),)
+        )
+        assert base.provenance == kb.Provenance(
+            version="v", generated_at="t", digest=base.digest, source="s"
+        )
+
+
+class TestPendingAndEnglishCount:
+    def test_counts_by_language(self):
+        base = kb.KnowledgeBase(
+            version="v",
+            generated_at="t",
+            source="s",
+            entries=(
+                entry(id="a", language="en"),
+                entry(id="b", language="km"),
+                entry(id="c", language="mixed"),
+            ),
+        )
+        assert base.english_count == 1
+        assert [item.id for item in base.pending] == ["b", "c"]
+
+
+class TestHistory:
+    def test_append_then_read(self, tmp_path):
+        path = tmp_path / "HISTORY.jsonl"
+        kb.append_history({"stage": "raw", "version": "1"}, path)
+        kb.append_history({"stage": "corpus", "version": "1-en"}, path)
+        records = kb.read_history(path)
+        assert [record["stage"] for record in records] == ["raw", "corpus"]
+
+    def test_appending_leaves_earlier_lines_byte_identical(self, tmp_path):
+        # The point of JSON Lines over a JSON array: two runs landing in one
+        # pull request conflict on the tail, not on the whole file.
+        path = tmp_path / "HISTORY.jsonl"
+        kb.append_history({"stage": "raw"}, path)
+        first = path.read_text(encoding="utf-8")
+        kb.append_history({"stage": "corpus"}, path)
+        assert path.read_text(encoding="utf-8").startswith(first)
+
+    def test_a_malformed_line_is_skipped_not_fatal(self, tmp_path):
+        path = tmp_path / "HISTORY.jsonl"
+        path.write_text('{"stage": "raw"}\nnot json\n{"stage": "corpus"}\n')
+        assert [record["stage"] for record in kb.read_history(path)] == [
+            "raw",
+            "corpus",
+        ]
+
+    def test_missing_file_is_empty(self, tmp_path):
+        assert kb.read_history(tmp_path / "absent.jsonl") == ()

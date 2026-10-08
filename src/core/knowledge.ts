@@ -1,6 +1,14 @@
 /**
- * The grounding corpus: ARDB's own published content, scraped into a file that
- * is reviewed and versioned alongside the code.
+ * The grounding corpus: ARDB's own published content, restated in one
+ * language, reviewed and versioned alongside the code.
+ *
+ * This is the second of two files. `knowledge/raw/ardb-raw.json` archives the
+ * pages exactly as ARDB published them; `knowledge/corpus/ardb-corpus.json`,
+ * the one imported here, is built from that archive by
+ * `tools/build_corpus.py`. The Worker never reads the archive. The split is
+ * what stops a re-scrape from replacing reviewed English with raw Khmer: a
+ * scrape writes the archive and nothing a customer sees changes until a
+ * corpus is built from it and merged.
  *
  * Shape is deliberately flat. Everything is sent to Claude on every request
  * behind a cache breakpoint, so there is no retrieval step to tune or get
@@ -30,11 +38,29 @@ export interface KnowledgeEntry {
   sourceLanguage?: "km" | "en" | "mixed";
 }
 
-export interface KnowledgeBase {
-  /** Bumped by the scraper on every run. Logged with each draft. */
+/** Which snapshot a file was built from. */
+export interface Provenance {
   version: string;
   generatedAt: string;
+  /** Content fingerprint of that snapshot's entries. */
+  digest: string;
   source: string;
+}
+
+export interface KnowledgeBase {
+  /** Bumped on every build. Logged with each draft. */
+  version: string;
+  /** When this corpus was built -- not when ARDB's pages were read. */
+  generatedAt: string;
+  source: string;
+  /** `"corpus"` for the file the Worker imports; `"raw"` for the archive. */
+  stage?: "raw" | "corpus";
+  /**
+   * The raw snapshot this corpus was built from, which is where `generatedAt`
+   * stops being the useful date: a corpus rebuilt today from a scrape taken
+   * in March is three months stale, and only this field says so.
+   */
+  builtFrom?: Provenance;
   entries: KnowledgeEntry[];
 }
 
@@ -68,8 +94,13 @@ export function renderKnowledge(kb: KnowledgeBase): string {
     ].join("\n"),
   );
 
+  // The scrape date, not the build date. A moderator asking "how old is this
+  // rate?" is asking when ARDB's page was read, and rebuilding the corpus
+  // does not make the underlying pages any fresher.
+  const scrapedAt = kb.builtFrom?.generatedAt ?? kb.generatedAt;
+
   return [
-    `ARDB published source material (knowledge base version ${kb.version}, scraped from ${kb.source} on ${kb.generatedAt}):`,
+    `ARDB published source material (knowledge base version ${kb.version}, scraped from ${kb.source} on ${scrapedAt}):`,
     "",
     sections.join("\n\n"),
   ].join("\n");

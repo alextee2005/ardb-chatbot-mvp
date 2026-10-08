@@ -1,8 +1,17 @@
-name: Scrape knowledge base
+name: Scrape ARDB pages (stage 1)
 
-# Opens a pull request rather than committing to a branch. The crawler is a
-# heuristic over a WordPress theme, and an unreviewed knowledge file is how a
-# navigation blob -- or a wrong interest rate -- reaches a customer.
+# Stage 1 of two. This workflow archives ARDB's pages exactly as published
+# into knowledge/raw/ardb-raw.json and stops there. It does not touch the
+# corpus, so merging its pull request changes nothing a customer sees.
+#
+# Stage 2 ("Build corpus") turns the archive into the English corpus the bot
+# answers from. It runs automatically once this workflow's pull request lands
+# on the default branch, and can be run by hand at any time.
+#
+# Opens a pull request rather than committing directly. The crawler is a
+# heuristic over a WordPress theme, and an unreviewed archive is how a
+# navigation blob -- or a wrong interest rate -- starts its journey towards a
+# customer.
 on:
   workflow_dispatch:
     inputs:
@@ -15,11 +24,6 @@ on:
         description: "Crawl regardless of robots.txt (ARDB's own site only)"
         required: false
         default: false
-        type: boolean
-      consolidate:
-        description: "Restate every page as normalized English (costs Claude tokens)"
-        required: false
-        default: true
         type: boolean
       dry_run:
         description: "Report what would change without opening a pull request"
@@ -43,6 +47,7 @@ concurrency:
 
 jobs:
   scrape:
+    name: Archive the pages as published
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -78,92 +83,11 @@ jobs:
           fi
           python scrape_knowledge.py "${args[@]}"
 
-      - name: Check the Claude credential before spending anything
-        if: inputs.consolidate != false
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          ANTHROPIC_WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
-        run: |
-          set -euo pipefail
-          if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-            echo "::error::ANTHROPIC_API_KEY is not set. Add it under Settings → Secrets and variables → Actions, or uncheck 'consolidate' to scrape only."
-            exit 1
-          fi
-          if [ -n "${ANTHROPIC_WORKSPACE_ID:-}" ]; then
-            # The header takes the workspace ID, not its name. A name is the
-            # obvious thing to paste in, and the API's rejection of one is a
-            # bare 400 well removed from the secret that caused it.
-            case "${ANTHROPIC_WORKSPACE_ID}" in
-              wrkspc_*)
-                echo "Scoping requests to workspace ${ANTHROPIC_WORKSPACE_ID}."
-                ;;
-              *)
-                echo "::error::ANTHROPIC_WORKSPACE_ID is not a workspace ID. It must look like wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ, which the Console shows under Settings → Workspaces in the ID column — not the workspace name. Simpler: create a workspace-scoped API key and delete this secret."
-                exit 1
-                ;;
-            esac
-          fi
-          case "${ANTHROPIC_API_KEY}" in
-            sk-ant-*) ;;
-            *) echo "::warning::ANTHROPIC_API_KEY does not start with sk-ant-. If the run fails to authenticate, the secret is probably wrong." ;;
-          esac
-
-      - name: Consolidate into normalized English
-        id: consolidate
-        if: inputs.consolidate != false
-        working-directory: tools
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          # Needed only when the key is organization-level rather than scoped
-          # to a workspace. An unscoped key authenticates, then every request
-          # is rejected with "not scoped to a workspace".
-          ANTHROPIC_WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
-          DRY_RUN: ${{ inputs.dry_run }}
-        run: |
-          set -euo pipefail
-          args=(
-            --summary-file "${RUNNER_TEMP}/consolidate-summary.txt"
-            --pr-body-file "${RUNNER_TEMP}/pr-body.md"
-          )
-          if [ "${DRY_RUN}" = "true" ]; then
-            args+=(--dry-run)
-          fi
-
-          # Exit 1 means some entries failed figure verification. Those keep
-          # their Khmer text rather than shipping an unverified rewrite, so
-          # the run is still useful -- the failures are named in the pull
-          # request for review. Only a harder failure should stop the run.
-          if python consolidate_knowledge.py "${args[@]}"; then
-            echo "verified=all" >> "${GITHUB_OUTPUT}"
-          else
-            status=$?
-            if [ "${status}" -eq 1 ]; then
-              # Some entries kept their Khmer text. The run is still useful and
-              # the causes are grouped in the pull request.
-              echo "verified=partial" >> "${GITHUB_OUTPUT}"
-              echo "::warning::Some entries were not consolidated and kept their Khmer text. See the pull request for the cause of each."
-            elif [ "${status}" -eq 2 ]; then
-              # Configuration, not corpus: the pre-flight request was
-              # rejected, so no page was ever sent.
-              echo "::error::Consolidation could not use the Claude credentials. The step output above carries the API's own message and the remedy. No entry failed verification."
-              exit 1
-            elif [ "${status}" -eq 3 ]; then
-              # Every entry failed after the credentials checked out. A
-              # warning on a green run would hide a total failure.
-              echo "::error::No entry was consolidated. The corpus is unchanged Khmer and the causes are in the step output above."
-              exit 1
-            else
-              exit "${status}"
-            fi
-          fi
-
-          cat "${RUNNER_TEMP}/consolidate-summary.txt" >> "${RUNNER_TEMP}/summary.txt"
-
       - name: Publish summary
         if: always()
         run: |
           {
-            echo "## Knowledge base scrape"
+            echo "## Stage 1 — raw archive"
             echo
             echo '```'
             cat "${RUNNER_TEMP}/summary.txt" 2>/dev/null || echo "No summary produced."
@@ -174,95 +98,28 @@ jobs:
         id: diff
         run: |
           set -euo pipefail
-          if git diff --quiet -- knowledge/ardb-knowledge.json; then
+          if git diff --quiet -- knowledge/raw/ardb-raw.json; then
             echo "changed=false" >> "${GITHUB_OUTPUT}"
-            echo "The scrape produced no change to the knowledge base."
+            echo "The scrape found nothing new. The archive is unchanged."
+            echo "The archive is unchanged — ARDB's pages have not moved." \
+              >> "${GITHUB_STEP_SUMMARY}"
           else
             echo "changed=true" >> "${GITHUB_OUTPUT}"
-            git --no-pager diff --stat -- knowledge/ardb-knowledge.json
+            git --no-pager diff --stat -- knowledge/raw/ardb-raw.json
           fi
 
-      - name: Push branch and open pull request
+      - name: Open pull request
         if: steps.diff.outputs.changed == 'true' && inputs.dry_run != true
-        env:
-          # Pull requests opened with this token do not trigger other
-          # workflows, so CI will not run on the branch until a human reopens
-          # the pull request or re-runs CI by hand.
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ steps.scrape.outputs.version }}
-        run: |
-          set -euo pipefail
-
+        uses: ./.github/actions/open-pr
+        with:
           # The run id keeps the branch unique. The version alone is
           # date-plus-entry-count, so two runs on the same day that keep the
-          # same number of pages collide and the push is rejected -- which is
-          # exactly what happened on run 3.
-          branch="knowledge/scrape-${VERSION:-$(date -u +%Y%m%d-%H%M)}-${GITHUB_RUN_ID}"
-
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -b "${branch}"
-          git add knowledge/ardb-knowledge.json
-          git commit -m "Refresh ARDB knowledge base (${VERSION:-unversioned})"
-          git push --set-upstream origin "${branch}"
-
-          # The branch is now safe on the remote, so the scrape cannot be lost
-          # from here on. Opening the pull request is the part that can be
-          # refused: GITHUB_TOKEN cannot create one unless "Allow GitHub
-          # Actions to create and approve pull requests" is enabled in
-          # Settings -> Actions -> General, and that is off by default. Treat
-          # a refusal as a degraded success and hand over a one-click link
-          # rather than failing a run whose real work succeeded.
-          #
-          # Body comes from a file written by the scraper: a heredoc here
-          # would carry the YAML indentation into the Markdown and render
-          # every line as a code block.
-          compare_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/${GITHUB_REF_NAME}...${branch}?expand=1"
-
-          if gh pr create \
-              --title "Refresh ARDB knowledge base (${VERSION:-unversioned})" \
-              --body-file "${RUNNER_TEMP}/pr-body.md" \
-              --base "${GITHUB_REF_NAME}" \
-              --head "${branch}" 2> "${RUNNER_TEMP}/pr-error.txt"; then
-            echo "Pull request opened."
-            {
-              echo "### Pull request opened"
-              echo
-              gh pr view "${branch}" --json url --jq .url
-            } >> "${GITHUB_STEP_SUMMARY}"
-            exit 0
-          fi
-
-          cat "${RUNNER_TEMP}/pr-error.txt"
-
-          if grep -qi "not permitted to create or approve pull requests" "${RUNNER_TEMP}/pr-error.txt"; then
-            {
-              echo "### Branch pushed — open the pull request manually"
-              echo
-              echo "The scrape succeeded and \`${branch}\` is pushed. GitHub"
-              echo "refused to let Actions open the pull request, which is the"
-              echo "default for a repository."
-              echo
-              echo "**[Open the pull request](${compare_url})**"
-              echo
-              echo "To let future runs open it automatically, enable"
-              echo "*Settings → Actions → General → Workflow permissions →"
-              echo "Allow GitHub Actions to create and approve pull requests*."
-            } >> "${GITHUB_STEP_SUMMARY}"
-            echo "::warning::Branch ${branch} pushed, but Actions is not permitted to open pull requests. Open it at ${compare_url}"
-            exit 0
-          fi
-
-          # Any other failure is a real one.
-          {
-            echo "### Pull request could not be opened"
-            echo
-            echo "Branch \`${branch}\` is pushed. \`gh pr create\` failed:"
-            echo
-            echo '```'
-            cat "${RUNNER_TEMP}/pr-error.txt"
-            echo '```'
-            echo
-            echo "**[Open it manually](${compare_url})**"
-          } >> "${GITHUB_STEP_SUMMARY}"
-          exit 1
+          # same number of pages collide and the push is rejected.
+          branch: knowledge/raw-${{ steps.scrape.outputs.version || github.run_id }}-${{ github.run_id }}
+          title: "Archive ARDB pages as published (${{ steps.scrape.outputs.version || 'unversioned' }})"
+          body-file: ${{ runner.temp }}/pr-body.md
+          paths: knowledge/raw/ardb-raw.json knowledge/HISTORY.jsonl
+          # A pull request opened with this token does not trigger other
+          # workflows, so CI will not run on the branch until a human reopens
+          # the pull request or re-runs CI by hand.
+          token: ${{ secrets.GITHUB_TOKEN }}

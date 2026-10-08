@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
-"""Consolidate the scraped corpus into one normalized English knowledge base.
+"""Stage 2, the paid route: fill the corpus's remaining pages using Claude.
 
     ANTHROPIC_API_KEY=... python tools/consolidate_knowledge.py
     ANTHROPIC_API_KEY=... python tools/consolidate_knowledge.py --only faq
     ANTHROPIC_API_KEY=... python tools/consolidate_knowledge.py --dry-run
 
-Reads knowledge/ardb-knowledge.json, restates each page in English, verifies
-every published figure survived, and writes the file back with the English
-text as `content` and the Khmer original retained as `sourceText`.
+`tools/build_corpus.py` is the primary stage 2: it restates pages from the
+hand-written modules in knowledge/restatements/ and costs nothing. Run this
+afterwards for any page those modules do not cover, and commit the result as
+a restatement module if you want the build to stay reproducible without an
+API key.
+
+Reads knowledge/corpus/ardb-corpus.json, restates each page still in its
+published language, verifies every published figure survived, and writes the
+file back with the English text as `content` and the original retained as
+`sourceText`.
 
 Already-consolidated entries are skipped unless --force is given, so a re-run
 after a partial failure costs only the entries that failed.
@@ -42,8 +49,8 @@ from ardb.consolidate import (
     verify_credentials,
 )
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_INPUT = REPO_ROOT / "knowledge" / "ardb-knowledge.json"
+REPO_ROOT = kb.REPO_ROOT
+DEFAULT_INPUT = kb.CORPUS_PATH
 
 
 def _display_path(path: Path) -> str:
@@ -62,6 +69,7 @@ def _display_path(path: Path) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
+    parser.add_argument("--history", type=Path, default=kb.HISTORY_PATH)
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument(
@@ -189,6 +197,11 @@ def main() -> int:
         generated_at=now.isoformat().replace("+00:00", "Z"),
         source=base.source,
         entries=merged,
+        stage="corpus",
+        # Carried through unchanged: this step rewrites pages inside a corpus,
+        # it does not rebuild one from a new archive, so the corpus still
+        # derives from the same raw snapshot.
+        built_from=base.built_from,
     )
 
     summary = _summarize(result_kb, selected, failures)
@@ -205,6 +218,25 @@ def main() -> int:
         print("\nDry run — nothing written.")
     else:
         kb.dump(result_kb, output)
+        kb.append_history(
+            {
+                "at": result_kb.generated_at,
+                "stage": "corpus",
+                "version": result_kb.version,
+                "entries": len(result_kb.entries),
+                "english": result_kb.english_count,
+                "chars": result_kb.total_chars,
+                "digest": result_kb.digest,
+                "builtFrom": (
+                    result_kb.built_from.to_dict() if result_kb.built_from else {}
+                ),
+                "via": "claude",
+                "model": args.model,
+                "consolidated": len(selected) - len(failures),
+                "failed": [entry_id for entry_id, _, _ in failures],
+            },
+            args.history,
+        )
         print(f"\nWrote {_display_path(output)} at version {result_kb.version}.")
 
     # Nothing consolidated at all is not a partial result. The credential

@@ -52,21 +52,92 @@ jobs:
         working-directory: tools
         run: python -m pytest
 
-      - name: Check the committed knowledge file parses
-        # The Worker imports this JSON at build time, so a malformed or
+      - name: Check the committed knowledge files parse
+        # The Worker imports the corpus JSON at build time, so a malformed or
         # off-schema file breaks deployment rather than failing at runtime.
         working-directory: tools
         run: |
           python -c "
+          from ardb import knowledge as kb
+
+          for label, path, stage in (
+              ('raw archive', kb.RAW_PATH, 'raw'),
+              ('corpus', kb.CORPUS_PATH, 'corpus'),
+          ):
+              parsed = kb.load(path)
+              ids = [entry.id for entry in parsed.entries]
+              print(f'{label}: {len(ids)} entries, version {parsed.version!r}, digest {parsed.digest}')
+
+              assert ids, f'{label} is empty'
+              assert len(ids) == len(set(ids)), f'{label} has duplicate entry IDs'
+              # Sorted order is what makes the rendered corpus byte-identical
+              # between requests, which the Worker's prompt cache depends on.
+              assert ids == sorted(ids), f'{label} must be sorted by id'
+              assert parsed.stage == stage, f'{label} is marked stage {parsed.stage!r}'
+
+          # The raw archive is the published original. A translation in there
+          # means a corpus was written over it, and the evidence for every
+          # English sentence the bot sends is gone.
+          raw = kb.load(kb.RAW_PATH)
+          assert not any(entry.is_consolidated for entry in raw.entries), (
+              'the raw archive contains restated entries; it must hold only '
+              'what ARDB published'
+          )
+          "
+
+      - name: Check the corpus matches the archive
+        # Not a failure. Stage 1 and stage 2 are separate workflows on
+        # purpose, so a merged scrape legitimately sits ahead of the corpus
+        # until stage 2 runs -- failing here would turn the normal sequence
+        # red. A warning is what the situation deserves: the bot is still
+        # answering from the previous scrape, and someone should run the
+        # build.
+        working-directory: tools
+        run: |
+          set -euo pipefail
+          if python build_corpus.py --check; then
+            exit 0
+          fi
+          echo "::warning::The committed corpus was not built from the committed raw archive. The bot is answering from the older scrape until the 'Build corpus (stage 2)' workflow runs."
+          {
+            echo "### Corpus is behind the archive"
+            echo
+            echo "Run the **Build corpus (stage 2)** workflow. Until then the"
+            echo "bot answers from the previous scrape."
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Check the corpus is reproducible from the archive
+        # The build must be a pure function of the two inputs in git. If
+        # rebuilding changes the file, the committed corpus was edited by hand
+        # or built from different restatements, and the next stage 2 run would
+        # silently revert that edit.
+        working-directory: tools
+        run: |
+          set -euo pipefail
+          python build_corpus.py \
+            --corpus "${RUNNER_TEMP}/rebuilt.json" \
+            --history "${RUNNER_TEMP}/rebuilt-history.jsonl" \
+            > /dev/null || true
+          python -c "
+          import os
           from pathlib import Path
           from ardb import knowledge as kb
 
-          parsed = kb.load(Path('../knowledge/ardb-knowledge.json'))
-          ids = [entry.id for entry in parsed.entries]
-          print(f'{len(ids)} entries, version {parsed.version!r}')
-
-          assert len(ids) == len(set(ids)), 'duplicate entry IDs'
-          # Sorted order is what makes the rendered corpus byte-identical
-          # between requests, which the Worker's prompt cache depends on.
-          assert ids == sorted(ids), 'entries must be sorted by id'
+          committed = kb.load(kb.CORPUS_PATH)
+          rebuilt = kb.load(Path(os.environ['RUNNER_TEMP']) / 'rebuilt.json')
+          if committed.digest == rebuilt.digest:
+              print(f'Reproducible: digest {committed.digest}.')
+              raise SystemExit(0)
+          committed_ids = {e.id: e.content for e in committed.entries}
+          rebuilt_ids = {e.id: e.content for e in rebuilt.entries}
+          differing = sorted(
+              eid for eid in committed_ids.keys() | rebuilt_ids.keys()
+              if committed_ids.get(eid) != rebuilt_ids.get(eid)
+          )
+          raise SystemExit(
+              'The committed corpus is not what a build of the committed '
+              'archive produces. Differing entries: '
+              + ', '.join(differing)
+              + '. Run tools/build_corpus.py and commit the result.'
+          )
           "

@@ -1,0 +1,133 @@
+name: Build corpus (stage 2)
+
+# Stage 2 of two. Turns the raw archive in knowledge/raw/ardb-raw.json into
+# knowledge/corpus/ardb-corpus.json -- the single-language corpus the Worker
+# imports and sends to Claude with every question.
+#
+# Nothing here touches the network. The input is the archive already in git,
+# which is what makes a build reproducible: the same archive and the same
+# restatements always produce the same corpus.
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Report what would change without opening a pull request"
+        required: false
+        default: false
+        type: boolean
+  push:
+    # Restricted to the default branch by the job's `if`, rather than by a
+    # hard-coded branch name here: the repository has been renamed once
+    # already, and a `branches:` filter naming a branch that does not exist
+    # fails silently -- the trigger simply never fires.
+    paths:
+      # A merged stage 1 pull request lands a new archive here, and the corpus
+      # must follow or the bot keeps answering from the previous scrape. The
+      # restatements are the build's other input, so a change to those needs a
+      # rebuild too.
+      - "knowledge/raw/**"
+      - "knowledge/restatements/**"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: build-corpus
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build the English corpus from the archive
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: tools/requirements.txt
+
+      - name: Install dependencies
+        # The build reads a file and writes a file. It needs no HTTP client and
+        # no API key -- requirements.txt is installed only because the
+        # knowledge modules are imported from the same package.
+        run: pip install -r tools/requirements.txt
+
+      - name: Build
+        id: build
+        working-directory: tools
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          args=(
+            --summary-file "${RUNNER_TEMP}/summary.txt"
+            --pr-body-file "${RUNNER_TEMP}/pr-body.md"
+          )
+          if [ "${DRY_RUN}" = "true" ]; then
+            args+=(--dry-run)
+          fi
+
+          # Exit 1 means some pages have no accepted restatement and stayed in
+          # their published language. The corpus is still written and still
+          # better than the one before it, so the run continues and names them
+          # in the pull request. Only a harder failure stops it.
+          if python build_corpus.py "${args[@]}"; then
+            echo "complete=true" >> "${GITHUB_OUTPUT}"
+          else
+            status=$?
+            if [ "${status}" -eq 1 ]; then
+              echo "complete=false" >> "${GITHUB_OUTPUT}"
+              echo "::warning::Some pages have no accepted English restatement and stayed in their published language. They are named in the pull request. Add a batch under knowledge/restatements/, or run tools/consolidate_knowledge.py with an API key."
+            elif [ "${status}" -eq 2 ]; then
+              echo "::error::No usable raw archive. Run the 'Scrape ARDB pages (stage 1)' workflow first — the corpus is built from the archive in git, not from the website."
+              exit 1
+            elif [ "${status}" -eq 3 ]; then
+              echo "::error::Not one page was restated, so the corpus would be the archive under another name while the prompt tells Claude the source material is English. Nothing was written."
+              exit 1
+            else
+              exit "${status}"
+            fi
+          fi
+
+      - name: Publish summary
+        if: always()
+        run: |
+          {
+            echo "## Stage 2 — English corpus"
+            echo
+            echo '```'
+            cat "${RUNNER_TEMP}/summary.txt" 2>/dev/null || echo "No summary produced."
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Check for changes
+        id: diff
+        run: |
+          set -euo pipefail
+          # The corpus alone: HISTORY.jsonl gains a line on every build, so
+          # including it here would make every run look like a change and open
+          # a pull request that alters nothing the bot reads.
+          if git diff --quiet -- knowledge/corpus/ardb-corpus.json; then
+            echo "changed=false" >> "${GITHUB_OUTPUT}"
+            echo "The corpus is unchanged — the archive and the restatements both already match it."
+            echo "The corpus is already current." >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "changed=true" >> "${GITHUB_OUTPUT}"
+            git --no-pager diff --stat -- knowledge/corpus/ardb-corpus.json
+          fi
+
+      - name: Open pull request
+        if: steps.diff.outputs.changed == 'true' && inputs.dry_run != true
+        uses: ./.github/actions/open-pr
+        with:
+          branch: knowledge/corpus-${{ steps.build.outputs.version || github.run_id }}-${{ github.run_id }}
+          title: "Rebuild ARDB corpus (${{ steps.build.outputs.version || 'unversioned' }})"
+          body-file: ${{ runner.temp }}/pr-body.md
+          paths: knowledge/corpus/ardb-corpus.json knowledge/HISTORY.jsonl
+          token: ${{ secrets.GITHUB_TOKEN }}

@@ -1,7 +1,14 @@
 {
   "version": "2026-10-08-33-en",
-  "generatedAt": "2026-10-08T05:25:38.477551Z",
+  "generatedAt": "2026-10-08T08:56:56.823599Z",
   "source": "https://www.ardb.com.kh",
+  "stage": "corpus",
+  "builtFrom": {
+    "version": "2026-10-08-33",
+    "generatedAt": "2026-10-08T03:06:26.409321Z",
+    "digest": "43dade5c8902820e",
+    "source": "https://www.ardb.com.kh"
+  },
   "entries": [
     {
       "id": "ardb-project-agriculture-services-program-for-an-inclusive-r",
