@@ -141,9 +141,13 @@ npm install
 cp .dev.vars.example .dev.vars   # fill in, for local `wrangler dev`
 
 for name in TELEGRAM_BOT_TOKEN TELEGRAM_WEBHOOK_SECRET MODERATOR_CHAT_ID \
-            ANTHROPIC_API_KEY DATABASE_URL; do
+            DATABASE_URL; do
   npx wrangler secret put "$name"
 done
+
+# Optional. Without it the bot runs moderator-only: tickets and cards still
+# work, a person writes every answer. `/health` reports which mode it is in.
+npx wrangler secret put ANTHROPIC_API_KEY
 
 npm run check     # typecheck + tests
 npm run deploy

@@ -15,7 +15,8 @@ export interface CustomerContext {
   telegram: TelegramClient;
   store: Store;
   knowledge: KnowledgeBase;
-  claude: ClaudeConfig;
+  /** Null when no Claude key is configured -- moderator writes every answer. */
+  claude: ClaudeConfig | null;
   moderatorChatId: number;
   rateLimitPerMinute: number;
 }
@@ -112,13 +113,26 @@ export async function handleQuestion(
 /**
  * Ask Claude for a draft, store it, and refresh the card with the result and
  * its buttons.
+ *
+ * With no Claude key configured the request is skipped rather than attempted:
+ * the ticket, the card and the moderator's Edit button all work, so the
+ * answer is simply written by a person. That is a deliberate operating mode,
+ * not a degraded one -- the review was always the thing standing between a
+ * draft and a customer.
  */
 async function draftAndUpdateCard(ctx: CustomerContext, ticket: Ticket): Promise<void> {
-  const result = await draftResponse(ctx.claude, {
-    question: ticket.question,
-    questionLanguage: ticket.questionLanguage,
-    knowledge: ctx.knowledge,
-  });
+  const result = ctx.claude
+    ? await draftResponse(ctx.claude, {
+        question: ticket.question,
+        questionLanguage: ticket.questionLanguage,
+        knowledge: ctx.knowledge,
+      })
+    : {
+        ok: false as const,
+        error:
+          "No Claude key is configured, so there is no suggested answer. " +
+          "Tap Edit and write the reply.",
+      };
 
   const updated = result.ok
     ? await ctx.store.setDraft(ticket.id, result.text, null)
@@ -126,7 +140,7 @@ async function draftAndUpdateCard(ctx: CustomerContext, ticket: Ticket): Promise
 
   await ctx.store.recordEvent({
     ticketId: ticket.id,
-    event: result.ok ? "draft_created" : "draft_failed",
+    event: result.ok ? "draft_created" : ctx.claude ? "draft_failed" : "draft_skipped",
     detail: result.ok ? result.text : result.error,
   });
 

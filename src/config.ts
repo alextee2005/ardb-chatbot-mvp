@@ -12,8 +12,13 @@ export interface Env {
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_WEBHOOK_SECRET: string;
   MODERATOR_CHAT_ID: string;
-  ANTHROPIC_API_KEY: string;
   DATABASE_URL: string;
+  /**
+   * Optional. Without it the bot runs moderator-only: a question still files
+   * a ticket and still reaches the group, but with no suggested answer for a
+   * moderator to edit. See `drafting` in Config.
+   */
+  ANTHROPIC_API_KEY?: string;
 
   // Plain vars from wrangler.jsonc.
   CLAUDE_MODEL?: string;
@@ -30,7 +35,8 @@ export interface Config {
   telegramToken: string;
   webhookSecret: string;
   moderatorChatId: number;
-  anthropicApiKey: string;
+  /** Null when no key is configured; drafting is then skipped entirely. */
+  anthropicApiKey: string | null;
   databaseUrl: string;
   claudeModel: string;
   claudeEffort: "low" | "medium" | "high" | "xhigh" | "max";
@@ -54,7 +60,6 @@ export function loadConfig(env: Env): Config {
       "TELEGRAM_BOT_TOKEN",
       "TELEGRAM_WEBHOOK_SECRET",
       "MODERATOR_CHAT_ID",
-      "ANTHROPIC_API_KEY",
       "DATABASE_URL",
     ] as const
   ).filter((key) => !env[key]);
@@ -98,7 +103,12 @@ export function loadConfig(env: Env): Config {
     telegramToken: env.TELEGRAM_BOT_TOKEN,
     webhookSecret: env.TELEGRAM_WEBHOOK_SECRET,
     moderatorChatId,
-    anthropicApiKey: env.ANTHROPIC_API_KEY,
+    // Deliberately not in the required list. The supervised queue -- ticket,
+    // card, moderator writes the answer, bot delivers it -- is the part that
+    // must work. Drafting is an accelerator on top of it, so a bot with no
+    // Claude key should run with a human writing every answer rather than
+    // refuse to start. An empty string counts as absent.
+    anthropicApiKey: env.ANTHROPIC_API_KEY?.trim() ? env.ANTHROPIC_API_KEY : null,
     databaseUrl: env.DATABASE_URL,
     // Matches the var in wrangler.jsonc. A cheap default rather than an
     // expensive one: a missing var should not quietly cost 40x more per

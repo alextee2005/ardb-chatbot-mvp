@@ -53,6 +53,10 @@ export default {
         knowledgeVersion: knowledge.version,
         knowledgeEntries: knowledge.entries.length,
         knowledgePlaceholder: isPlaceholder(knowledge),
+        // Whether questions get a suggested answer, or go to the group for a
+        // moderator to write. Reported because the symptom of a missing key
+        // is subtle -- cards arrive, just without drafts.
+        drafting: Boolean(env.ANTHROPIC_API_KEY?.trim()),
       });
     }
 
@@ -191,11 +195,13 @@ async function processUpdate(
       telegram,
       store,
       knowledge,
-      claude: {
-        apiKey: config.anthropicApiKey,
-        model: config.claudeModel,
-        effort: config.claudeEffort,
-      },
+      claude: config.anthropicApiKey
+        ? {
+            apiKey: config.anthropicApiKey,
+            model: config.claudeModel,
+            effort: config.claudeEffort,
+          }
+        : null,
       moderatorChatId: config.moderatorChatId,
       rateLimitPerMinute: config.rateLimitPerMinute,
     };

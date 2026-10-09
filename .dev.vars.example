@@ -18,7 +18,13 @@ TELEGRAM_WEBHOOK_SECRET=
 # which lists every chat the bot can currently see.
 MODERATOR_CHAT_ID=
 
-# console.anthropic.com -> API keys
+# Optional. console.anthropic.com -> API keys.
+#
+# Leave it unset to run moderator-only: a question still files a ticket and
+# still reaches the group, but with no suggested answer -- the moderator taps
+# Edit and writes the reply, and the bot delivers it. Every other part of the
+# flow is unchanged. /health reports "drafting": false so you can tell which
+# mode a deployment is in.
 ANTHROPIC_API_KEY=
 
 # Neon connection string, e.g.
