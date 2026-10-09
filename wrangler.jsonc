@@ -17,7 +17,13 @@
   // never add TELEGRAM_BOT_TOKEN, ANTHROPIC_API_KEY, DATABASE_URL,
   // MODERATOR_CHAT_ID or TELEGRAM_WEBHOOK_SECRET here.
   "vars": {
-    "CLAUDE_MODEL": "claude-opus-5-5",
+    // Haiku 5.5 for drafting. Every draft is read and approved by a
+    // moderator before a customer sees it, which is the safety net that makes
+    // the cheaper model a reasonable trade -- roughly $0.003 a question
+    // against $0.02-0.13 on Opus. Raise this to claude-opus-5-5 if drafts
+    // start needing heavy editing. Haiku has no server-side refusal
+    // fallback, which src/adapters/claude.ts accounts for by model.
+    "CLAUDE_MODEL": "claude-haiku-5-5",
     "CLAUDE_EFFORT": "low",
     "RATE_LIMIT_PER_MINUTE": "3",
     "LOG_LEVEL": "info",

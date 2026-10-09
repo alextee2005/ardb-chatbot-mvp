@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { supportsServerSideFallback } from "../src/adapters/claude.js";
 import { buildSystemBlocks, buildUserMessage } from "../src/core/draft.js";
 import { isPlaceholder, renderKnowledge, type KnowledgeBase } from "../src/core/knowledge.js";
 
@@ -159,5 +160,34 @@ describe("buildUserMessage", () => {
     expect(message).toContain("តើអត្រាការប្រាក់ប៉ុន្មាន?");
     expect(message).toContain("Khmer");
     expect(message).toContain("Trust the question itself");
+  });
+});
+
+describe("supportsServerSideFallback", () => {
+  it("opts the models that have it into server-side refusal fallback", () => {
+    for (const model of [
+      "claude-opus-5-5",
+      "claude-opus-5",
+      "claude-sonnet-5-5",
+      "claude-fable-5-1",
+    ]) {
+      expect(supportsServerSideFallback(model)).toBe(true);
+    }
+  });
+
+  it("leaves Haiku out, because it has no server-side fallback", () => {
+    // With `fallbacks: "default"` a declined Haiku request stays declined, so
+    // sending the parameter buys nothing and reads like a safety net that is
+    // not there. A refusal on Haiku has to be handled client-side -- which
+    // draftResponse does, by putting the category on the moderator's card.
+    expect(supportsServerSideFallback("claude-haiku-5-5")).toBe(false);
+    expect(supportsServerSideFallback("claude-haiku-4-5")).toBe(false);
+  });
+
+  it("omits the parameter for a model it does not recognise", () => {
+    // Omitting it costs a retry the model may not have had anyway; sending it
+    // to a model that rejects it costs every draft.
+    expect(supportsServerSideFallback("claude-opus-4-8")).toBe(false);
+    expect(supportsServerSideFallback("some-future-model")).toBe(false);
   });
 });

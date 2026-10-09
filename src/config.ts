@@ -100,7 +100,10 @@ export function loadConfig(env: Env): Config {
     moderatorChatId,
     anthropicApiKey: env.ANTHROPIC_API_KEY,
     databaseUrl: env.DATABASE_URL,
-    claudeModel: env.CLAUDE_MODEL ?? "claude-opus-5-5",
+    // Matches the var in wrangler.jsonc. A cheap default rather than an
+    // expensive one: a missing var should not quietly cost 40x more per
+    // question than the deployment intends.
+    claudeModel: env.CLAUDE_MODEL ?? "claude-haiku-5-5",
     claudeEffort: effort as Config["claudeEffort"],
     rateLimitPerMinute: positiveInt(env.RATE_LIMIT_PER_MINUTE, 3),
     sla,

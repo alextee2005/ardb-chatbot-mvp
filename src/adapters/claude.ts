@@ -31,6 +31,23 @@ export interface ClaudeConfig {
  */
 const MAX_TOKENS = 4000;
 
+/**
+ * Models that accept `fallbacks: "default"` -- the server re-running a
+ * declined request on another model inside the same call.
+ *
+ * An allowlist rather than a denylist, because omitting the parameter is
+ * always safe and sending it where it is unsupported is not: Haiku 5.5 has no
+ * server-side fallback at all (a declined request stays declined), and a model
+ * that rejects the parameter outright fails the whole request. A model missing
+ * from this list loses a retry it never had; a model wrongly added to it loses
+ * every draft.
+ */
+const FALLBACK_CAPABLE = /^claude-(fable-5|mythos-5|opus-5|sonnet-5-5)/;
+
+export function supportsServerSideFallback(model: string): boolean {
+  return FALLBACK_CAPABLE.test(model);
+}
+
 export async function draftResponse(
   config: ClaudeConfig,
   request: DraftRequest,
@@ -38,14 +55,17 @@ export async function draftResponse(
   const client = new Anthropic({ apiKey: config.apiKey });
 
   try {
+    // Routes by refusal category, so there is no fallback model list to keep
+    // current as models come and go -- but only where the model supports it.
+    const fallbacks = supportsServerSideFallback(config.model)
+      ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const }
+      : {};
+
     const response = await client.beta.messages.create({
       model: config.model,
       max_tokens: MAX_TOKENS,
       output_config: { effort: config.effort },
-      // Routes by refusal category, so there is no fallback model list to keep
-      // current as models come and go.
-      betas: ["server-side-fallback-2026-07-01"],
-      fallbacks: "default",
+      ...fallbacks,
       system: buildSystemBlocks(request.knowledge),
       messages: [{ role: "user", content: buildUserMessage(request) }],
     });
