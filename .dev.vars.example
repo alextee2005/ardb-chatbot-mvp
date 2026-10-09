@@ -12,7 +12,10 @@ TELEGRAM_BOT_TOKEN=
 TELEGRAM_WEBHOOK_SECRET=
 
 # The private moderator group's chat ID (negative number for groups, e.g.
-# -1001234567890). Run `npm run get-chat-id` to discover it.
+# -1001234567890). To find it: add the bot to the group, post one message
+# there, then run the "Verify bot" GitHub Action -- or, locally,
+#   TELEGRAM_BOT_TOKEN=... python tools/verify_bot.py
+# which lists every chat the bot can currently see.
 MODERATOR_CHAT_ID=
 
 # console.anthropic.com -> API keys
