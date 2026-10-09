@@ -224,12 +224,20 @@ handled in `ctx.waitUntil`. Telegram retries a webhook it considers slow, and a
 retry would file a second ticket for one question — so the fast `200` plus the
 `processed_updates` dedupe table are two halves of one defence.
 
-**Claude Opus 5.5 at `low` effort.** Thinking cannot be disabled on this model
-and `budget_tokens` is rejected outright; `output_config.effort` is the only
-control, and its default is `medium`, so it is set explicitly. Server-side
-refusal fallbacks are enabled, so a safety decline is retried on another model
-inside the same call rather than leaving a moderator with an empty card. Change
-the model in `wrangler.jsonc` without touching code.
+**Claude Haiku 5.5 at `low` effort.** Around $0.003 a question against
+$0.02-0.13 on Opus 5.5, and the moderator review every draft already goes
+through is what makes that trade reasonable: nothing reaches a customer
+unread. On both models `budget_tokens` is rejected and thinking cannot be
+switched off, so `output_config.effort` is the only control; its default is
+`medium`, and it is set explicitly.
+
+**Haiku has no server-side refusal fallback**, so a safety decline cannot be
+retried on another model — `fallbacks: "default"` would leave a declined
+request declined. `src/adapters/claude.ts` therefore sends that parameter only
+to the models that have it, and a refusal reaches the moderator card naming
+its category for them to answer by hand. Change the model in `wrangler.jsonc`
+without touching code; the fallback behaviour follows the model
+automatically.
 
 **The whole knowledge base is sent with every question**, behind a prompt-cache
 breakpoint, rather than retrieved. There is no retrieval step to tune and no
