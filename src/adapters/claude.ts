@@ -109,6 +109,45 @@ export async function draftResponse(
 }
 
 /**
+ * How much of the API's own message to carry through.
+ *
+ * Enough to name a rejected field and its constraint, which is the whole
+ * reason for quoting it, but bounded: the card is one Telegram message with a
+ * hard 4096-character limit shared with the question, and a validation error
+ * listing every union variant can run to thousands of characters.
+ */
+const MAX_API_MESSAGE_CHARS = 400;
+
+/**
+ * The API's own explanation of a rejection.
+ *
+ * A status and an error type alone cannot be acted on: every malformed
+ * request is a 400 `invalid_request_error`, whether the cause is an
+ * unsupported parameter, a blank content block or an over-long prompt. The
+ * body says which, and dropping it costs a redeploy per hypothesis.
+ *
+ * Only the API's description of the request is quoted. It describes field
+ * names and constraints, not the customer's question -- and the card it lands
+ * on already shows that question to the same moderators.
+ */
+function apiMessage(error: InstanceType<typeof Anthropic.APIError>): string {
+  const body: unknown = error.error;
+  const detail =
+    body && typeof body === "object" && "error" in body
+      ? (body as { error?: { message?: unknown } }).error?.message
+      : undefined;
+
+  // `error.error` is the parsed body and is absent when the response was not
+  // JSON (a gateway's HTML error page, say); `error.message` is the SDK's
+  // composed string and is always present, so it is the fallback.
+  const text = typeof detail === "string" && detail.trim() ? detail : error.message;
+  const trimmed = text.trim().replace(/\s+/g, " ");
+  return trimmed.length > MAX_API_MESSAGE_CHARS
+    ? `${trimmed.slice(0, MAX_API_MESSAGE_CHARS - 1)}\u2026`
+    : trimmed;
+}
+
+/**
  * Specific before general: a rate limit and a bad API key need different
  * responses from whoever is on call, and collapsing them into one message
  * loses that.
@@ -124,7 +163,12 @@ function describeError(error: unknown): string {
     return "Could not reach the Claude API.";
   }
   if (error instanceof Anthropic.APIError) {
-    return `Claude returned HTTP ${error.status ?? "unknown"} (${error.type ?? "unclassified"}).`;
+    // The request ID is what Anthropic support asks for first.
+    const reference = error.requestID ? ` [${error.requestID}]` : "";
+    return (
+      `Claude returned HTTP ${error.status ?? "unknown"} ` +
+      `(${error.type ?? "unclassified"}): ${apiMessage(error)}${reference}`
+    );
   }
   return error instanceof Error ? error.message : "Unknown error drafting a response.";
 }

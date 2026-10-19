@@ -77,6 +77,21 @@ export async function draftAndUpdateCard(
         cacheWrite: result.cacheWrite,
       }),
     );
+  } else if (ctx.draft) {
+    // A failed draft is not a failed request: the card still carries the
+    // question and its buttons, so the run stays green and a moderator
+    // answers by hand. But green and silent are different things -- without
+    // this line the only copy of the reason is the card itself, which is the
+    // one place an operator reading logs is not looking.
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        msg: "draft failed",
+        ticketId: ticket.id,
+        knowledgeVersion: ctx.knowledge.version,
+        reason: result.error,
+      }),
+    );
   }
 
   // A ticket whose card never posted has nothing to refresh. The draft is

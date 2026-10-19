@@ -33,6 +33,13 @@ export interface InlineKeyboard {
  */
 const MAX_QUESTION_CHARS = 1200;
 const MAX_DRAFT_CHARS = 2400;
+/**
+ * A failure reason now quotes the provider's own message, whose length no
+ * code here controls. Clamped like any other borrowed text, so a verbose
+ * validation error cannot push the card past Telegram's limit and lose the
+ * question along with it.
+ */
+const MAX_ERROR_CHARS = 600;
 
 function clamp(text: string, limit: number): string {
   if (text.length <= limit) return text;
@@ -60,7 +67,11 @@ export function renderCard(ticket: Ticket): string {
   ];
 
   if (ticket.draftError) {
-    lines.push("", "<b>Suggested response</b>", `<i>${escapeHtml(ticket.draftError)}</i>`);
+    lines.push(
+      "",
+      "<b>Suggested response</b>",
+      `<i>${escapeHtml(clamp(ticket.draftError, MAX_ERROR_CHARS))}</i>`,
+    );
   } else if (ticket.draft) {
     lines.push(
       "",
