@@ -1,0 +1,101 @@
+name: Draft a ticket
+
+# Step 2 of the GitHub drafting route:
+#
+#   customer → Worker (ticket + card) → repository_dispatch
+#            → this workflow (Claude Haiku) → draft written, card refreshed
+#
+# The dispatch carries a ticket ID and nothing else. The question text stays
+# in Postgres and this job reads it from there, so a customer's enquiry never
+# enters a GitHub event payload or an Actions log. That is deliberate: Actions
+# logs are readable by anyone with repository access and retained for weeks.
+#
+# Required repository secrets:
+#   DATABASE_URL        Neon, pooled
+#   ANTHROPIC_API_KEY   Claude, for the drafting call
+#   TELEGRAM_BOT_TOKEN  to edit the moderator card
+#   MODERATOR_CHAT_ID   which chat the card is in
+on:
+  repository_dispatch:
+    types: [draft-ticket]
+  workflow_dispatch:
+    inputs:
+      ticket_id:
+        description: "Ticket to draft (for re-running one by hand)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  # Per ticket, not global: two questions arriving together must both get
+  # drafted, but the same ticket twice would race on the same card.
+  group: draft-${{ github.event.client_payload.ticket_id || inputs.ticket_id }}
+  cancel-in-progress: false
+
+jobs:
+  draft:
+    name: Draft and refresh the card
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+
+      - run: npm ci
+
+      - name: Draft the ticket
+        env:
+          TICKET_ID: ${{ github.event.client_payload.ticket_id || inputs.ticket_id }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          MODERATOR_CHAT_ID: ${{ secrets.MODERATOR_CHAT_ID }}
+          # Same defaults as the Worker. Override either as a repository
+          # variable to change the model without touching code.
+          CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL || 'claude-haiku-5-5' }}
+          CLAUDE_EFFORT: ${{ vars.CLAUDE_EFFORT || 'low' }}
+        run: |
+          set -euo pipefail
+
+          for name in DATABASE_URL ANTHROPIC_API_KEY TELEGRAM_BOT_TOKEN MODERATOR_CHAT_ID; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Missing repository secret ${name}. Add it under Settings → Secrets and variables → Actions."
+              exit 1
+            fi
+          done
+
+          # Bundled rather than run through a TypeScript loader: the script
+          # imports src/core and src/adapters, which use the project's
+          # .js-extension import style, and esbuild resolves that natively.
+          # esbuild is already present as a build dependency.
+          npx esbuild scripts/draft-ticket.ts \
+            --bundle --platform=node --format=esm \
+            --outfile="${RUNNER_TEMP}/draft-ticket.mjs" \
+            --log-level=warning
+
+          node "${RUNNER_TEMP}/draft-ticket.mjs"
+
+      - name: Report
+        if: always()
+        env:
+          TICKET_ID: ${{ github.event.client_payload.ticket_id || inputs.ticket_id }}
+          OUTCOME: ${{ job.status }}
+        run: |
+          {
+            echo "## Ticket ${TICKET_ID}: ${OUTCOME}"
+            echo
+            if [ "${OUTCOME}" != "success" ]; then
+              echo "The moderator card for this ticket still shows the question"
+              echo "with Edit and Reject, so the question is not lost -- a"
+              echo "moderator can answer it by hand. The step log above says why"
+              echo "the draft did not happen."
+            fi
+            echo
+            echo "The question text is deliberately absent from this run."
+            echo "It is in Postgres and on the moderator card."
+          } >> "${GITHUB_STEP_SUMMARY}"

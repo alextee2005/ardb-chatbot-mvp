@@ -50,6 +50,39 @@ describe("loadConfig", () => {
       ).toBe("none");
     });
 
+    it("needs both a token and a repository for the github route", () => {
+      // Half-configured is the dangerous shape: a token with no repository
+      // has nowhere to aim, and a repository with no token cannot
+      // authenticate. Either way the card would never fill in, so both
+      // resolve to moderator-only instead.
+      const token = { GITHUB_DISPATCH_TOKEN: "ghp_x" };
+      const repo = { GITHUB_REPOSITORY: "owner/repo" };
+      expect(loadConfig({ ...required, DRAFT_PROVIDER: "github" }).draftProvider).toBe("none");
+      expect(
+        loadConfig({ ...required, DRAFT_PROVIDER: "github", ...token }).draftProvider,
+      ).toBe("none");
+      expect(
+        loadConfig({ ...required, DRAFT_PROVIDER: "github", ...repo }).draftProvider,
+      ).toBe("none");
+      expect(
+        loadConfig({ ...required, DRAFT_PROVIDER: "github", ...token, ...repo }).draftProvider,
+      ).toBe("github");
+    });
+
+    it("defaults the dispatch event type and trims the repository", () => {
+      const config = loadConfig({
+        ...required,
+        DRAFT_PROVIDER: "github",
+        GITHUB_DISPATCH_TOKEN: "ghp_x",
+        GITHUB_REPOSITORY: "  owner/repo  ",
+      });
+      expect(config.githubDispatch).toEqual({
+        token: "ghp_x",
+        repository: "owner/repo",
+        eventType: "draft-ticket",
+      });
+    });
+
     it("rejects an unknown provider name", () => {
       // A typo is a mistake, not a missing optional dependency, and silently
       // falling back would hide it for as long as nobody reads /health.

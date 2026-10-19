@@ -2,13 +2,11 @@
  * The customer side: /start, and questions arriving in a private chat.
  */
 
-import type { DraftResult } from "../adapters/claude.js";
 import { displayName, type TelegramClient, type TelegramMessage } from "../adapters/telegram.js";
 import type { Store } from "../adapters/store.js";
 import { detectLanguage } from "../core/language.js";
 import { CUSTOMER_MESSAGES } from "../core/messages.js";
-import { renderCard, renderKeyboard } from "../core/moderator-card.js";
-import type { DraftRequest } from "../core/draft.js";
+import { renderCard } from "../core/moderator-card.js";
 import type { KnowledgeBase } from "../core/knowledge.js";
 import type { Ticket } from "../core/tickets.js";
 
@@ -17,13 +15,15 @@ export interface CustomerContext {
   store: Store;
   knowledge: KnowledgeBase;
   /**
-   * Writes the suggested answer, or null for moderator-only.
+   * What happens once the ticket and its card exist.
    *
-   * A function rather than a provider's configuration, so this handler never
-   * learns which service is behind it -- adding a third provider touches
-   * worker.ts and one adapter, not the flow.
+   * Either drafting inline and refreshing the card, or handing the ticket to
+   * another runtime that will do both. The flow does not care which: it has
+   * already told the customer to wait and already shown the moderator the
+   * question, so a draft arriving in two seconds or two minutes changes
+   * nothing here. Null means moderator-only.
    */
-  draft: ((request: DraftRequest) => Promise<DraftResult>) | null;
+  onTicket: ((ticket: Ticket) => Promise<void>) | null;
   moderatorChatId: number;
   rateLimitPerMinute: number;
 }
@@ -114,63 +114,5 @@ export async function handleQuestion(
     );
   }
 
-  await draftAndUpdateCard(ctx, ticket);
-}
-
-/**
- * Ask Claude for a draft, store it, and refresh the card with the result and
- * its buttons.
- *
- * With no Claude key configured the request is skipped rather than attempted:
- * the ticket, the card and the moderator's Edit button all work, so the
- * answer is simply written by a person. That is a deliberate operating mode,
- * not a degraded one -- the review was always the thing standing between a
- * draft and a customer.
- */
-async function draftAndUpdateCard(ctx: CustomerContext, ticket: Ticket): Promise<void> {
-  const result = ctx.draft
-    ? await ctx.draft({
-        question: ticket.question,
-        questionLanguage: ticket.questionLanguage,
-        knowledge: ctx.knowledge,
-      })
-    : {
-        ok: false as const,
-        error:
-          "No drafting provider is configured, so there is no suggested " +
-          "answer. Tap Edit and write the reply.",
-      };
-
-  const updated = result.ok
-    ? await ctx.store.setDraft(ticket.id, result.text, null)
-    : await ctx.store.setDraft(ticket.id, null, result.error);
-
-  await ctx.store.recordEvent({
-    ticketId: ticket.id,
-    event: result.ok ? "draft_created" : ctx.draft ? "draft_failed" : "draft_skipped",
-    detail: result.ok ? result.text : result.error,
-  });
-
-  if (result.ok) {
-    console.log(
-      JSON.stringify({
-        level: "info",
-        msg: "draft created",
-        ticketId: ticket.id,
-        knowledgeVersion: ctx.knowledge.version,
-        cacheRead: result.cacheRead,
-        cacheWrite: result.cacheWrite,
-      }),
-    );
-  }
-
-  if (!updated || updated.cardMessageId === null) return;
-
-  await ctx.telegram.editMessageText({
-    chatId: ctx.moderatorChatId,
-    messageId: updated.cardMessageId,
-    text: renderCard(updated),
-    parseMode: "HTML",
-    replyMarkup: renderKeyboard(updated),
-  });
+  if (ctx.onTicket) await ctx.onTicket(ticket);
 }

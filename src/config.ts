@@ -8,9 +8,9 @@
 import { DEFAULT_SLA_POLICY, type SlaPolicy } from "./core/sla.js";
 
 /** Who writes the suggested answer, if anyone. */
-export type DraftProvider = "claude" | "workers-ai" | "none";
+export type DraftProvider = "claude" | "workers-ai" | "github" | "none";
 
-const PROVIDERS = ["claude", "workers-ai", "none"] as const;
+const PROVIDERS = ["claude", "workers-ai", "github", "none"] as const;
 
 export interface Env {
   /**
@@ -25,6 +25,12 @@ export interface Env {
   MODERATOR_CHAT_ID: string;
   DATABASE_URL: string;
   /**
+   * Only for DRAFT_PROVIDER "github": a fine-grained token with Contents:
+   * write on this repository and nothing else. It can trigger workflows,
+   * which is why its scope matters more than the Claude key's.
+   */
+  GITHUB_DISPATCH_TOKEN?: string;
+  /**
    * Optional. Without it the bot runs moderator-only: a question still files
    * a ticket and still reaches the group, but with no suggested answer for a
    * moderator to edit. See `drafting` in Config.
@@ -36,6 +42,8 @@ export interface Env {
   CLAUDE_MODEL?: string;
   CLAUDE_EFFORT?: string;
   WORKERS_AI_MODEL?: string;
+  GITHUB_REPOSITORY?: string;
+  GITHUB_DISPATCH_EVENT?: string;
   RATE_LIMIT_PER_MINUTE?: string;
   LOG_LEVEL?: string;
   SLA_NUDGE_AFTER_MINUTES?: string;
@@ -66,6 +74,7 @@ export interface Config {
   claudeModel: string;
   claudeEffort: "low" | "medium" | "high" | "xhigh" | "max";
   workersAiModel: string;
+  githubDispatch: { token: string; repository: string; eventType: string } | null;
   rateLimitPerMinute: number;
   sla: SlaPolicy;
 }
@@ -118,6 +127,21 @@ export function loadConfig(env: Env): Config {
   if (draftProvider === "claude" && !anthropicApiKey) draftProvider = "none";
   if (draftProvider === "workers-ai" && !env.AI) draftProvider = "none";
 
+  // The dispatch needs both halves: a token to authenticate and a repository
+  // to aim at. GITHUB_REPOSITORY has no safe default -- guessing a repository
+  // name would send a customer's ticket ID to someone else's workflow.
+  const dispatchToken = env.GITHUB_DISPATCH_TOKEN?.trim() ? env.GITHUB_DISPATCH_TOKEN : null;
+  const dispatchRepo = env.GITHUB_REPOSITORY?.trim() ? env.GITHUB_REPOSITORY.trim() : null;
+  const githubDispatch =
+    dispatchToken && dispatchRepo
+      ? {
+          token: dispatchToken,
+          repository: dispatchRepo,
+          eventType: env.GITHUB_DISPATCH_EVENT?.trim() || "draft-ticket",
+        }
+      : null;
+  if (draftProvider === "github" && !githubDispatch) draftProvider = "none";
+
   const effort = env.CLAUDE_EFFORT ?? "low";
   if (!(EFFORTS as readonly string[]).includes(effort)) {
     throw new ConfigError(
@@ -162,6 +186,7 @@ export function loadConfig(env: Env): Config {
     // (~20,000 tokens) is sent with every question and Workers AI has no
     // prompt cache to put it behind.
     workersAiModel: env.WORKERS_AI_MODEL ?? "@cf/openai/gpt-oss-20b",
+    githubDispatch,
     claudeEffort: effort as Config["claudeEffort"],
     rateLimitPerMinute: positiveInt(env.RATE_LIMIT_PER_MINUTE, 3),
     sla,

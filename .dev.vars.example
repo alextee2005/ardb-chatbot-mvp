@@ -32,6 +32,15 @@ MODERATOR_CHAT_ID=
 # and the bot delivers it. /health reports which provider is in effect.
 ANTHROPIC_API_KEY=
 
+# Only for DRAFT_PROVIDER "github". A fine-grained personal access token with
+# Contents: write on this repository and NOTHING else -- that is the minimum
+# repository_dispatch accepts. Scope it tightly: unlike the Claude key, a
+# leak of this one lets someone change the bot's code and the published rates
+# it quotes.
+#   GitHub -> Settings -> Developer settings -> Personal access tokens ->
+#   Fine-grained tokens -> Generate new token
+GITHUB_DISPATCH_TOKEN=
+
 # Neon connection string, e.g.
 # postgresql://user:pass@ep-xxx.ap-southeast-1.aws.neon.tech/ardb?sslmode=require
 DATABASE_URL=

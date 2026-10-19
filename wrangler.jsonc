@@ -33,7 +33,13 @@
     // a moderator-written reply every time. A provider that cannot run --
     // "claude" with no API key -- degrades to "none" rather than failing the
     // webhook, and /health reports which one is actually in effect.
-    "DRAFT_PROVIDER": "workers-ai",
+    "DRAFT_PROVIDER": "github",
+
+    // Only for DRAFT_PROVIDER "github": which repository receives the
+    // dispatch. No default -- guessing a repository name would send a ticket
+    // ID to someone else's workflow. The token goes in a Worker secret
+    // (GITHUB_DISPATCH_TOKEN); this is just the address.
+    "GITHUB_REPOSITORY": "alextee2005/ardb-chatbot-mvp",
 
     // Confirmed 128,000-token context window, which is the binding
     // constraint: the whole corpus (~20,000 tokens) is sent with every

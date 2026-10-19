@@ -15,11 +15,13 @@
 import knowledgeJson from "../knowledge/corpus/ardb-corpus.json";
 
 import { draftResponse, type DraftResult } from "./adapters/claude.js";
+import { dispatchDraft } from "./adapters/github-dispatch.js";
 import { draftWithWorkersAi } from "./adapters/workers-ai.js";
 import { Store } from "./adapters/store.js";
 import { TelegramClient } from "./adapters/telegram.js";
 import { loadConfig, ConfigError, type Env } from "./config.js";
 import type { DraftRequest } from "./core/draft.js";
+import type { Ticket } from "./core/tickets.js";
 import { isPlaceholder, type KnowledgeBase } from "./core/knowledge.js";
 import { CUSTOMER_MESSAGES } from "./core/messages.js";
 import {
@@ -33,25 +35,43 @@ import {
   type CallbackQuery,
   type ModeratorContext,
 } from "./handlers/moderator.js";
+import { draftAndUpdateCard } from "./handlers/drafting.js";
 import { runSlaSweep } from "./handlers/sla.js";
 import type { TelegramMessage } from "./adapters/telegram.js";
 
 const knowledge = knowledgeJson as KnowledgeBase;
 
 /**
- * Bind the configured provider into a single function, or null for
- * moderator-only.
+ * What happens once a ticket and its moderator card exist.
  *
- * `config.draftProvider` is already the *effective* provider: loadConfig
- * resolves a provider it cannot run down to "none", so this never has to
- * check for a missing key or binding a second time.
+ * Three shapes, one signature. Inline drafting does the work on the webhook;
+ * the GitHub route hands the ticket to a workflow that does the same work in
+ * another runtime; moderator-only does nothing and leaves a person to write
+ * the answer.
+ *
+ * `config.draftProvider` is already the *effective* provider -- loadConfig
+ * resolves one it cannot run down to "none" -- so nothing here re-checks for
+ * a missing key, binding or token.
  */
-function selectDrafter(
+function selectOnTicket(
   config: ReturnType<typeof loadConfig>,
-): ((request: DraftRequest) => Promise<DraftResult>) | null {
+  telegram: TelegramClient,
+  store: Store,
+): ((ticket: Ticket) => Promise<void>) | null {
+  const inline = (draft: (request: DraftRequest) => Promise<DraftResult>) => {
+    const ctx = {
+      telegram,
+      store,
+      knowledge,
+      moderatorChatId: config.moderatorChatId,
+      draft,
+    };
+    return (ticket: Ticket) => draftAndUpdateCard(ctx, ticket);
+  };
+
   switch (config.draftProvider) {
     case "claude":
-      return (request) =>
+      return inline((request) =>
         draftResponse(
           {
             apiKey: config.anthropicApiKey!,
@@ -59,10 +79,46 @@ function selectDrafter(
             effort: config.claudeEffort,
           },
           request,
-        );
+        ),
+      );
+
     case "workers-ai":
-      return (request) =>
-        draftWithWorkersAi({ binding: config.ai!, model: config.workersAiModel }, request);
+      return inline((request) =>
+        draftWithWorkersAi({ binding: config.ai!, model: config.workersAiModel }, request),
+      );
+
+    case "github":
+      // The card stays as posted -- question visible, Edit and Reject live --
+      // until the workflow fills it in. A moderator who answers before the
+      // draft lands simply resolves the ticket, and the drafting job then
+      // finds it resolved and leaves it alone.
+      return async (ticket: Ticket) => {
+        const dispatched = await dispatchDraft(config.githubDispatch!, ticket.id);
+        if (dispatched.ok) return;
+
+        // A dispatch that failed silently would leave a card that never
+        // fills in and no explanation anywhere. Put the reason on the card
+        // itself, where the person waiting for the draft is looking.
+        console.error(
+          JSON.stringify({
+            level: "error",
+            msg: "draft dispatch failed",
+            ticketId: ticket.id,
+            detail: dispatched.error,
+          }),
+        );
+        await draftAndUpdateCard(
+          {
+            telegram,
+            store,
+            knowledge,
+            moderatorChatId: config.moderatorChatId,
+            draft: async () => ({ ok: false, error: dispatched.error }),
+          },
+          ticket,
+        );
+      };
+
     case "none":
       return null;
   }
@@ -236,7 +292,7 @@ async function processUpdate(
       telegram,
       store,
       knowledge,
-      draft: selectDrafter(config),
+      onTicket: selectOnTicket(config, telegram, store),
       moderatorChatId: config.moderatorChatId,
       rateLimitPerMinute: config.rateLimitPerMinute,
     };
