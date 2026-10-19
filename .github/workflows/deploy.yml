@@ -50,6 +50,17 @@ on:
         required: false
         default: ""
         type: string
+      draft_provider:
+        description: "Who writes the suggested answer"
+        required: false
+        default: "wrangler.jsonc"
+        type: choice
+        options:
+          - wrangler.jsonc
+          - workers-ai
+          - github
+          - claude
+          - none
 
 permissions:
   contents: read
@@ -86,6 +97,7 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           DISPATCH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
           THIS_REPOSITORY: ${{ github.repository }}
+          PROVIDER_INPUT: ${{ inputs.draft_provider }}
         run: |
           set -euo pipefail
           missing=()
@@ -125,9 +137,14 @@ jobs:
           # token is required, and that lives in wrangler.jsonc rather than
           # here. Read with grep because wrangler.jsonc carries comments and
           # so is not valid JSON for jq.
-          provider="$(grep -oE '"DRAFT_PROVIDER"[[:space:]]*:[[:space:]]*"[a-z-]+"' wrangler.jsonc \
-            | grep -oE '"[a-z-]+"$' | tr -d '"' || true)"
-          echo "DRAFT_PROVIDER in wrangler.jsonc: ${provider:-unset}"
+          if [ -n "${PROVIDER_INPUT:-}" ] && [ "${PROVIDER_INPUT}" != "wrangler.jsonc" ]; then
+            provider="${PROVIDER_INPUT}"
+            echo "DRAFT_PROVIDER: ${provider} (from the workflow input)"
+          else
+            provider="$(grep -oE '"DRAFT_PROVIDER"[[:space:]]*:[[:space:]]*"[a-z-]+"' wrangler.jsonc \
+              | grep -oE '"[a-z-]+"$' | tr -d '"' || true)"
+            echo "DRAFT_PROVIDER: ${provider:-unset} (from wrangler.jsonc)"
+          fi
 
           if [ "${provider}" = "github" ]; then
             if [ -z "${DISPATCH_TOKEN:-}" ]; then
@@ -158,15 +175,25 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           DRY_RUN: ${{ inputs.dry_run }}
+          PROVIDER_INPUT: ${{ inputs.draft_provider }}
         run: |
           set -euo pipefail
+
+          # --var overrides the vars block for this deploy only; the file stays
+          # the source of truth for anyone reading the repo.
+          args=()
+          if [ -n "${PROVIDER_INPUT:-}" ] && [ "${PROVIDER_INPUT}" != "wrangler.jsonc" ]; then
+            args+=(--var "DRAFT_PROVIDER:${PROVIDER_INPUT}")
+            echo "Deploying with DRAFT_PROVIDER=${PROVIDER_INPUT}."
+          fi
+
           if [ "${DRY_RUN}" = "true" ]; then
-            npx wrangler deploy --dry-run --outdir "${RUNNER_TEMP}/build"
+            npx wrangler deploy --dry-run --outdir "${RUNNER_TEMP}/build" "${args[@]+"${args[@]}"}"
             echo "Dry run — nothing deployed."
             exit 0
           fi
 
-          npx wrangler deploy | tee "${RUNNER_TEMP}/deploy.log"
+          npx wrangler deploy "${args[@]+"${args[@]}"}" | tee "${RUNNER_TEMP}/deploy.log"
 
           # wrangler prints the deployed URL; take the first workers.dev URL it
           # reports. An override input covers a custom domain or a change in

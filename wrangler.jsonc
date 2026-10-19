@@ -33,7 +33,12 @@
     // a moderator-written reply every time. A provider that cannot run --
     // "claude" with no API key -- degrades to "none" rather than failing the
     // webhook, and /health reports which one is actually in effect.
-    "DRAFT_PROVIDER": "github",
+    // The committed default needs no credential, so a fresh clone always
+    // deploys. The "github" route needs a dispatch token, and a default that
+    // demands a secret nobody has created yet turns a working deployment into
+    // an undeployable one -- which is exactly what it did. Choose the route
+    // per deploy with the draft_provider input on the Deploy workflow.
+    "DRAFT_PROVIDER": "workers-ai",
 
     // Only for DRAFT_PROVIDER "github": which repository receives the
     // dispatch. No default -- guessing a repository name would send a ticket
