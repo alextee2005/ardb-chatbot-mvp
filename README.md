@@ -236,11 +236,34 @@ retry would file a second ticket for one question — so the fast `200` plus the
 `processed_updates` dedupe table are two halves of one defence.
 
 **Drafting is pluggable, and optional.** `DRAFT_PROVIDER` picks between
-`workers-ai` (the default), `claude`, and `none`. The handler holds a draft
-function rather than a provider's configuration, so a third provider touches
-`worker.ts` and one adapter, not the flow. A provider that cannot run -- the
-`claude` setting with no API key -- resolves to `none` rather than failing
-every webhook call, and `/health` reports which one is actually in effect.
+`workers-ai` (the default), `claude`, `github`, and `none`. The handler holds a
+draft function rather than a provider's configuration, so a third provider
+touches `worker.ts` and one adapter, not the flow. A provider that cannot run
+-- the `claude` setting with no API key -- resolves to `none` rather than
+failing every webhook call, and `/health` reports which one is actually in
+effect.
+
+**The `github` route can draft on a Claude subscription, with no API key.**
+The Worker sends a `repository_dispatch` carrying a ticket ID and nothing
+else; `draft-ticket.yml` reads the question from Postgres and runs the Claude
+Code CLI. Authenticate it by running `claude setup-token` on your own machine
+and adding the output as a `CLAUDE_CODE_OAUTH_TOKEN` repository secret:
+drafting then draws on the subscription and costs nothing per question. An
+`ANTHROPIC_API_KEY` still works and is used only when that token is absent,
+with a warning that it is the billed path.
+
+Worth being exact about, because it is easy to assume otherwise: routing
+through Actions does not by itself avoid paying per token. It moves where the
+Anthropic call is made, not whether it is billed. The subscription token is
+what avoids it. An exhausted API balance, incidentally, arrives as a 400
+`invalid_request_error` rather than a 402, so the adapter classifies it
+explicitly instead of reporting a malformed request.
+
+The question travels as a file on the runner, never as a command argument or
+a log line, and the drafting step runs with no tools and one turn. The step
+that stores the draft runs even when the CLI step fails, so a card never sits
+mid-draft: it either carries a suggested answer or says why it does not, and
+Edit works in both cases.
 
 **Workers AI needs no credential at all.** Inference runs on Cloudflare
 through the `AI` binding, so there is no key to leak or fund. 10,000 neurons a
