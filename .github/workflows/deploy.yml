@@ -96,7 +96,20 @@ jobs:
             *-pooler*) ;;
             *) echo "::warning::DATABASE_URL has no -pooler in its hostname. The Worker is serverless and wants Neon's pooled connection string." ;;
           esac
-          echo "All five secrets are present."
+
+          # Telegram accepts 1-256 characters of A-Z a-z 0-9 _ - in
+          # secret_token and rejects anything else with "secret token contains
+          # illegal characters". This is a hard error rather than a warning
+          # because the run would otherwise deploy, set every secret, and then
+          # fail on the last step -- leaving a live Worker that Telegram is not
+          # pointed at, which looks exactly like a broken bot. Ten seconds here
+          # beats a confusing half-deployment.
+          if ! printf '%s' "${TELEGRAM_WEBHOOK_SECRET}" | grep -qE '^[A-Za-z0-9_-]{1,256}$'; then
+            echo "::error::TELEGRAM_WEBHOOK_SECRET contains characters Telegram will not accept. Use only letters, digits, underscore and hyphen (1-256 of them) -- no spaces, punctuation or symbols. A good value: the 64 hex characters from https://www.random.org/strings/?num=4\&len=16\&digits=on\&upperalpha=on\&loweralpha=on\&unique=on\&format=plain pasted together."
+            exit 1
+          fi
+
+          echo "All five secrets are present and well-formed."
 
       - name: Typecheck and test
         # A deploy of code that does not compile is worse than no deploy: the

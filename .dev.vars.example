@@ -7,8 +7,12 @@ TELEGRAM_BOT_TOKEN=
 
 # A random string you invent. Telegram echoes it back on every webhook call in
 # the X-Telegram-Bot-Api-Secret-Token header, which is how the Worker knows a
-# request really came from Telegram. Generate one with:
-#   openssl rand -hex 32
+# request really came from Telegram.
+#
+# Telegram accepts 1-256 characters of A-Z a-z 0-9 _ - and nothing else: a
+# space or a symbol is rejected with "secret token contains illegal
+# characters", from setWebhook rather than from here, so the mistake surfaces
+# a long way from its cause. `openssl rand -hex 32` is always valid.
 TELEGRAM_WEBHOOK_SECRET=
 
 # The private moderator group's chat ID (negative number for groups, e.g.
