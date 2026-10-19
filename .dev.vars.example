@@ -23,7 +23,14 @@ TELEGRAM_WEBHOOK_SECRET=
 MODERATOR_CHAT_ID=
 
 # Optional, and only needed when DRAFT_PROVIDER is "claude" in wrangler.jsonc.
-# console.anthropic.com -> API keys.
+# console.anthropic.com -> API keys. Billed per token.
+#
+# For the "github" route there is a cheaper option that needs no API key at
+# all: a Claude subscription. Run `claude setup-token` on your own machine and
+# add the output as a *repository secret* named CLAUDE_CODE_OAUTH_TOKEN. The
+# drafting workflow prefers it over this key and draws on the subscription, so
+# there is nothing to top up per question. That token is only ever used by
+# GitHub Actions -- the Worker has no use for it.
 #
 # The default provider is "workers-ai", which runs on Cloudflare's own
 # inference through the AI binding and needs no credential at all. Set

@@ -3,16 +3,27 @@ name: Draft a ticket
 # Step 2 of the GitHub drafting route:
 #
 #   customer → Worker (ticket + card) → repository_dispatch
-#            → this workflow (Claude Haiku) → draft written, card refreshed
+#            → this workflow (Claude) → draft written, card refreshed
 #
 # The dispatch carries a ticket ID and nothing else. The question text stays
-# in Postgres and this job reads it from there, so a customer's enquiry never
-# enters a GitHub event payload or an Actions log. That is deliberate: Actions
-# logs are readable by anyone with repository access and retained for weeks.
+# in Postgres; this job reads it from there and passes it to Claude as a file
+# on the runner, so a customer's enquiry never enters a GitHub event payload,
+# a process listing or an Actions log. That is deliberate: Actions logs are
+# readable by anyone with repository access and retained for weeks.
 #
-# Required repository secrets:
+# Two ways to authenticate, tried in this order:
+#
+#   CLAUDE_CODE_OAUTH_TOKEN  A Claude subscription (Pro, Max, Team or
+#                            Enterprise). Generate it by running
+#                            `claude setup-token` on your own machine and
+#                            paste the output into this secret. Drafting then
+#                            draws on the subscription and costs nothing per
+#                            question -- no Anthropic API account, no credits.
+#   ANTHROPIC_API_KEY        A pay-as-you-go Anthropic API key, billed per
+#                            token. Only used when the token above is absent.
+#
+# Required repository secrets either way:
 #   DATABASE_URL        Neon, pooled
-#   ANTHROPIC_API_KEY   Claude, for the drafting call
 #   TELEGRAM_BOT_TOKEN  to edit the moderator card
 #   MODERATOR_CHAT_ID   which chat the card is in
 on:
@@ -34,6 +45,12 @@ concurrency:
   group: draft-${{ github.event.client_payload.ticket_id || inputs.ticket_id }}
   cancel-in-progress: false
 
+env:
+  TICKET_ID: ${{ github.event.client_payload.ticket_id || inputs.ticket_id }}
+  # Same default as the Worker. Override as a repository variable to change
+  # the model without touching code.
+  CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL || 'claude-haiku-5-5' }}
+
 jobs:
   draft:
     name: Draft and refresh the card
@@ -48,46 +65,131 @@ jobs:
 
       - run: npm ci
 
-      - name: Draft the ticket
+      - name: Choose how to authenticate
+        id: auth
         env:
-          TICKET_ID: ${{ github.event.client_payload.ticket_id || inputs.ticket_id }}
+          OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           MODERATOR_CHAT_ID: ${{ secrets.MODERATOR_CHAT_ID }}
-          # Same defaults as the Worker. Override either as a repository
-          # variable to change the model without touching code.
-          CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL || 'claude-haiku-5-5' }}
-          CLAUDE_EFFORT: ${{ vars.CLAUDE_EFFORT || 'low' }}
         run: |
           set -euo pipefail
 
-          for name in DATABASE_URL ANTHROPIC_API_KEY TELEGRAM_BOT_TOKEN MODERATOR_CHAT_ID; do
+          for name in DATABASE_URL TELEGRAM_BOT_TOKEN MODERATOR_CHAT_ID; do
             if [ -z "${!name:-}" ]; then
               echo "::error::Missing repository secret ${name}. Add it under Settings → Secrets and variables → Actions."
               exit 1
             fi
           done
 
-          # Bundled rather than run through a TypeScript loader: the script
-          # imports src/core and src/adapters, which use the project's
-          # .js-extension import style, and esbuild resolves that natively.
-          # esbuild is already present as a build dependency.
+          # The subscription token wins when both are present, so adding one
+          # is all it takes to stop being billed per token. The API key is
+          # never silently preferred.
+          if [ -n "${OAUTH_TOKEN:-}" ]; then
+            echo "mode=subscription" >> "${GITHUB_OUTPUT}"
+            echo "Authenticating with CLAUDE_CODE_OAUTH_TOKEN (no per-token billing)."
+          elif [ -n "${API_KEY:-}" ]; then
+            echo "mode=api-key" >> "${GITHUB_OUTPUT}"
+            echo "::warning::No CLAUDE_CODE_OAUTH_TOKEN, falling back to ANTHROPIC_API_KEY (billed per token). Run 'claude setup-token' and add the output as CLAUDE_CODE_OAUTH_TOKEN to use a Claude subscription instead."
+          else
+            echo "::error::Neither CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY is set, so there is nothing to draft with. Run 'claude setup-token' locally and add its output as the CLAUDE_CODE_OAUTH_TOKEN repository secret."
+            exit 1
+          fi
+
+      # ---------------------------------------------------------------
+      # Subscription route: render the prompt, run the CLI, deliver.
+      # Three steps rather than one so the question and the draft travel
+      # as files and never become command arguments or log lines.
+      # ---------------------------------------------------------------
+
+      - name: Prepare the prompt
+        id: prepare
+        if: steps.auth.outputs.mode == 'subscription'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          PROMPT_DIR: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          npx esbuild scripts/prepare-draft.ts \
+            --bundle --platform=node --format=esm \
+            --outfile="${RUNNER_TEMP}/prepare-draft.mjs" --log-level=warning
+          node "${RUNNER_TEMP}/prepare-draft.mjs"
+
+      - name: Ask Claude for a draft
+        id: cli
+        if: steps.auth.outputs.mode == 'subscription' && steps.prepare.outputs.skip != 'true'
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # --system-prompt-file replaces Claude Code's own system prompt with
+          # the bot's, so the draft is grounded in the ARDB corpus and nothing
+          # else. The question arrives on stdin. Both are files: neither is an
+          # argument, so neither reaches a process listing.
+          #
+          # No tools, one turn: this is a text-in, text-out call, and a
+          # drafting job has no business reading the repository or the network.
+          # Output goes straight to a file so the draft is never echoed.
+          npx --yes @anthropic-ai/claude-code@2.1.303 \
+            --print \
+            --model "${CLAUDE_MODEL}" \
+            --system-prompt-file "${RUNNER_TEMP}/system.txt" \
+            --output-format json \
+            --max-turns 1 \
+            --allowed-tools "" \
+            --strict-mcp-config \
+            < "${RUNNER_TEMP}/question.txt" \
+            > "${RUNNER_TEMP}/result.json"
+
+      - name: Store the draft and refresh the card
+        # always(): a card left mid-draft is worse than one saying why there
+        # is no draft. With no result file, that is what the moderator sees.
+        if: always() && steps.auth.outputs.mode == 'subscription' && steps.prepare.outputs.skip != 'true'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          MODERATOR_CHAT_ID: ${{ secrets.MODERATOR_CHAT_ID }}
+          PROMPT_DIR: ${{ runner.temp }}
+          CLI_OUTCOME: ${{ steps.cli.outcome }}
+        run: |
+          set -euo pipefail
+          npx esbuild scripts/finish-draft.ts \
+            --bundle --platform=node --format=esm \
+            --outfile="${RUNNER_TEMP}/finish-draft.mjs" --log-level=warning
+          node "${RUNNER_TEMP}/finish-draft.mjs"
+
+      # ---------------------------------------------------------------
+      # API-key route: the original single-script path, kept so a
+      # pay-as-you-go key still works if someone prefers one.
+      # ---------------------------------------------------------------
+
+      - name: Draft the ticket with the Anthropic API
+        if: steps.auth.outputs.mode == 'api-key'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          MODERATOR_CHAT_ID: ${{ secrets.MODERATOR_CHAT_ID }}
+          CLAUDE_EFFORT: ${{ vars.CLAUDE_EFFORT || 'low' }}
+        run: |
+          set -euo pipefail
           npx esbuild scripts/draft-ticket.ts \
             --bundle --platform=node --format=esm \
-            --outfile="${RUNNER_TEMP}/draft-ticket.mjs" \
-            --log-level=warning
-
+            --outfile="${RUNNER_TEMP}/draft-ticket.mjs" --log-level=warning
           node "${RUNNER_TEMP}/draft-ticket.mjs"
 
       - name: Report
         if: always()
         env:
-          TICKET_ID: ${{ github.event.client_payload.ticket_id || inputs.ticket_id }}
           OUTCOME: ${{ job.status }}
+          MODE: ${{ steps.auth.outputs.mode }}
         run: |
           {
             echo "## Ticket ${TICKET_ID}: ${OUTCOME}"
+            echo
+            echo "Authentication: ${MODE:-undetermined}"
             echo
             if [ "${OUTCOME}" != "success" ]; then
               echo "The moderator card for this ticket still shows the question"
@@ -96,6 +198,6 @@ jobs:
               echo "the draft did not happen."
             fi
             echo
-            echo "The question text is deliberately absent from this run."
-            echo "It is in Postgres and on the moderator card."
+            echo "The question and the draft are deliberately absent from this run."
+            echo "They are in Postgres and on the moderator card."
           } >> "${GITHUB_STEP_SUMMARY}"

@@ -15,27 +15,6 @@
  */
 
 
-/**
- * Declared rather than imported from `node:process`.
- *
- * This project's tsconfig targets Workers and carries no @types/node, and
- * adding them to typecheck one Node script would put Node's globals in scope
- * for src/ too -- where they do not exist at runtime. Typing `exit` as
- * `never` also lets the compiler see that the guards below are terminal.
- */
-declare const process: {
-  env: Record<string, string | undefined>;
-  exit: (code: number) => never;
-};
-const { env } = process;
-// The annotation is load-bearing: TypeScript treats a call as terminal only
-// when the callee is a name with an explicitly declared never return type,
-// so without it every guard below leaves `ticket` possibly null.
-const exit: (code: number) => never = process.exit;
-
-// Bundled in, exactly as src/worker.ts imports it, so the drafting job and
-// the Worker ground a draft in the same bytes. Reading it from disk at
-// runtime would depend on where the bundle happens to sit.
 import knowledgeJson from "../knowledge/corpus/ardb-corpus.json" with { type: "json" };
 
 import { draftResponse } from "../src/adapters/claude.js";
@@ -44,33 +23,16 @@ import { TelegramClient } from "../src/adapters/telegram.js";
 import type { KnowledgeBase } from "../src/core/knowledge.js";
 import { isTerminal } from "../src/core/tickets.js";
 import { draftAndUpdateCard } from "../src/handlers/drafting.js";
+import { env, exit, required, requiredInt } from "./lib/env.js";
 
 const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 
-function required(name: string): string {
-  const value = env[name]?.trim();
-  if (!value) {
-    console.error(`${name} is not set.`);
-    exit(2);
-  }
-  return value;
-}
-
-const ticketId = Number.parseInt(required("TICKET_ID"), 10);
-if (!Number.isSafeInteger(ticketId) || ticketId <= 0) {
-  console.error(`TICKET_ID must be a positive integer, got "${env.TICKET_ID}".`);
-  exit(2);
-}
-
+const ticketId = requiredInt("TICKET_ID", { positive: true });
 const databaseUrl = required("DATABASE_URL");
 const anthropicApiKey = required("ANTHROPIC_API_KEY");
 const telegramToken = required("TELEGRAM_BOT_TOKEN");
 
-const moderatorChatId = Number.parseInt(required("MODERATOR_CHAT_ID"), 10);
-if (!Number.isSafeInteger(moderatorChatId)) {
-  console.error("MODERATOR_CHAT_ID must be an integer.");
-  exit(2);
-}
+const moderatorChatId = requiredInt("MODERATOR_CHAT_ID");
 
 const effort = env.CLAUDE_EFFORT?.trim() || "low";
 if (!(EFFORTS as readonly string[]).includes(effort)) {
