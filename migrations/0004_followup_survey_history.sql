@@ -81,15 +81,29 @@ CREATE INDEX IF NOT EXISTS conversation_surveys_responded_idx
 -- --------------------------------------------------------------------
 --
 -- Deliberately plain: same columns as the live tables plus archived_at, no
--- foreign keys, no CHECK constraints, no cascades. An archive exists to be
--- readable years later, and a constraint added to a live table in 2027 must
--- not be able to reject a row written in 2026.
+-- foreign keys, no CHECK constraints, no cascades, and -- see below -- no NOT
+-- NULL. An archive exists to be readable years later, and a rule added to a
+-- live table in 2027 must not be able to reject a row written in 2026.
 --
--- LIKE ... EXCLUDING ALL copies the column names and types and nothing else,
+-- LIKE ... EXCLUDING ALL gets most of the way there: it copies column names
+-- and types while leaving behind defaults, constraints, indexes and identity,
 -- so these stay structurally in step with the live tables without inheriting
--- their rules. It also means a future ALTER to a live table needs the same
--- ALTER here -- the alternative, generating these at archive time, would hide
--- a schema drift until the week it lost data.
+-- their rules. A future ALTER to a live table still needs the same ALTER here;
+-- the alternative, generating these at archive time, would hide a schema drift
+-- until the week it lost data.
+--
+-- But EXCLUDING ALL does NOT exclude NOT NULL, which is part of a column
+-- definition rather than a table constraint and is always copied. That leaves
+-- the worst of both: NOT NULL without the DEFAULT that made it satisfiable on
+-- the live table. Add a NOT NULL DEFAULT column to `tickets` in 2027 and the
+-- archive of a 2026 row would be rejected for a column that did not exist
+-- when it was written -- the exact failure the paragraph above claims is
+-- impossible, in a weekly job, on a bank's correspondence.
+--
+-- So the NOT NULLs are dropped explicitly. The archive always supplies every
+-- column (it copies whole rows with SELECT t.*), so nothing is lost by
+-- allowing nulls, and the table becomes genuinely tolerant rather than
+-- tolerant-looking.
 
 CREATE TABLE IF NOT EXISTS conversations_history (
   LIKE conversations EXCLUDING ALL
@@ -120,3 +134,29 @@ ALTER TABLE ticket_events_history ADD PRIMARY KEY (id);
 
 CREATE INDEX IF NOT EXISTS ticket_events_history_ticket_idx
   ON ticket_events_history (ticket_id, created_at);
+
+-- Drop NOT NULL from every history column except the primary key and
+-- archived_at, both of which this migration sets itself and always populates.
+--
+-- A loop rather than a list of ALTERs: the columns are whatever LIKE copied,
+-- and a hand-maintained list would fall out of step with the live tables --
+-- which is the failure this is here to prevent in the first place. Idempotent,
+-- so re-running the migration is a no-op.
+DO $$
+DECLARE
+  target  TEXT;
+  col     TEXT;
+BEGIN
+  FOREACH target IN ARRAY ARRAY['conversations_history','tickets_history','ticket_events_history']
+  LOOP
+    FOR col IN
+      SELECT column_name FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = target
+        AND is_nullable = 'NO'
+        AND column_name NOT IN ('id','archived_at')
+    LOOP
+      EXECUTE format('ALTER TABLE %I ALTER COLUMN %I DROP NOT NULL', target, col);
+    END LOOP;
+  END LOOP;
+END $$;

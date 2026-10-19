@@ -63,10 +63,12 @@ DATABASE_URL=
 # drafted as a follow-up, and the finished one gets an ended_at. Default 60.
 # CONVERSATION_IDLE_MINUTES=60
 
-# Optional. Minutes after the last answer before the bot asks whether anything
-# else is needed. Default 3. The follow-up is never sent while a question is
-# still unanswered, whatever this is set to.
-# FOLLOWUP_MINUTES=3
+# Optional. Quiet minutes after the last activity before the bot asks whether
+# anything else is needed. Default 30. The conversation is then closed
+# CONVERSATION_IDLE_MINUTES after that question was *sent*, so an abandoned
+# interaction ends 90 minutes after the last activity on the defaults. The
+# follow-up is never sent while a question is still unanswered.
+# FOLLOWUP_MINUTES=30
 
 # Optional. How long a closed conversation stays in the live tables before the
 # weekly archive moves it into the history tables, and how many are moved per
@@ -74,6 +76,12 @@ DATABASE_URL=
 # only what it can prove it copied, so neither value can cause data loss.
 # ARCHIVE_AFTER_DAYS=7
 # ARCHIVE_BATCH_SIZE=200
+
+# Optional. How long an archived interaction is kept before it is deleted
+# outright. Default 10 years, measured from the date of the interaction rather
+# than the day it was archived. Satisfaction results are deleted on the same
+# clock, measured from when they were given.
+# HISTORY_RETENTION_YEARS=10
 
 # Optional. SLA thresholds in minutes; the defaults in wrangler.jsonc apply
 # when these are absent or invalid.

@@ -5,7 +5,11 @@
  * line at the edge, rather than as an undefined threaded three calls deep.
  */
 
-import { DEFAULT_FOLLOWUP_MINUTES, DEFAULT_IDLE_MINUTES } from "./core/conversations.js";
+import {
+  DEFAULT_FOLLOWUP_MINUTES,
+  DEFAULT_HISTORY_RETENTION_YEARS,
+  DEFAULT_IDLE_MINUTES,
+} from "./core/conversations.js";
 import { DEFAULT_SLA_POLICY, type SlaPolicy } from "./core/sla.js";
 
 /** Who writes the suggested answer, if anyone. */
@@ -51,6 +55,7 @@ export interface Env {
   FOLLOWUP_MINUTES?: string;
   ARCHIVE_AFTER_DAYS?: string;
   ARCHIVE_BATCH_SIZE?: string;
+  HISTORY_RETENTION_YEARS?: string;
   SLA_NUDGE_AFTER_MINUTES?: string;
   SLA_NUDGE_REPEAT_MINUTES?: string;
   SLA_MAX_NUDGES?: string;
@@ -89,6 +94,8 @@ export interface Config {
   archiveAfterDays: number;
   /** Conversations moved per weekly run, so one run stays inside the CPU limit. */
   archiveBatchSize: number;
+  /** How long an archived interaction is kept before it is deleted outright. */
+  historyRetentionYears: number;
   sla: SlaPolicy;
 }
 
@@ -209,6 +216,10 @@ export function loadConfig(env: Env): Config {
     followupMinutes: positiveInt(env.FOLLOWUP_MINUTES, DEFAULT_FOLLOWUP_MINUTES),
     archiveAfterDays: positiveInt(env.ARCHIVE_AFTER_DAYS, 7),
     archiveBatchSize: positiveInt(env.ARCHIVE_BATCH_SIZE, 200),
+    historyRetentionYears: positiveInt(
+      env.HISTORY_RETENTION_YEARS,
+      DEFAULT_HISTORY_RETENTION_YEARS,
+    ),
     sla,
   };
 }

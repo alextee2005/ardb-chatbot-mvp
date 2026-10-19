@@ -250,8 +250,8 @@ half with no error to show for it. The conflict path doubles as the "another
 question in the same conversation" path, so the common case and the race
 resolve through the same branch.
 
-**An interaction ends by asking, not by guessing.** Three minutes after an
-answer is delivered (`FOLLOWUP_MINUTES`) the bot asks "is there anything else
+**An interaction ends by asking, not by guessing.** Thirty quiet minutes after
+the last activity (`FOLLOWUP_MINUTES`) the bot asks "is there anything else
 that we can help you with?" with two buttons. **No** closes the conversation
 as `completed` -- the only ending the customer actually confirms. **Yes**
 clears the follow-up and invites the next question, and once that one is
@@ -259,19 +259,39 @@ answered the question comes round again, so the follow-up is per answer rather
 than per conversation. Typing a new question instead of tapping does the same
 thing and strips the now-meaningless buttons.
 
-The guard that matters is that the follow-up is never sent while a question is
-still in the queue. At a three-minute threshold an unanswered ticket is the
-normal case, not an edge one, and "anything else?" arriving while the customer
-is still waiting reads as though the bot forgot them.
+The follow-up is never sent while a question is still in the queue. An
+"anything else?" arriving while the customer is still waiting reads as though
+the bot forgot them -- rarer at half an hour than it was at three minutes, but
+a question stuck in the queue overnight is exactly when it would sting most.
+
+**The two windows are sequential, and that is load-bearing.** The follow-up
+comes due 30 minutes after the last activity; the conversation is closed
+`idleMinutes` (60) after the *follow-up was sent*, not after the last activity.
+Measuring both from the same instant with the same value would have been the
+obvious reading of "60 minutes consistently" and would have broken the feature
+silently: the sweep closes conversations before it asks follow-ups, and only an
+open conversation can be asked, so the follow-up would simply never have gone
+out with nothing failing anywhere. A test asserts the ordering against
+whatever the defaults become rather than against 30 and 60.
+
+A conversation whose last question is still sitting unanswered never becomes
+eligible for a follow-up at all, so there is a backstop: with no follow-up
+sent, it closes `followupMinutes + idleMinutes` (90) after the last activity.
+Without the sum it would stay open for ever and never be surveyed. The rule
+exists twice -- `isConversationOver` in TypeScript, which decides whether an
+arriving question joins the old thread, and the same two branches in SQL,
+which decide when the thread is recorded as finished -- and they must agree,
+or a question could be threaded onto a conversation the sweep had already
+closed.
 
 `/start` no longer ends a conversation. It did, and that was wrong: it
 discarded the thread of anyone who tapped the menu button mid-conversation and
 then asked a follow-up. An open conversation now survives a `/start` and the
 greeting is just a greeting.
 
-So `ended_reason` is one of `completed` (the customer said no), `idle` (quiet
-for `CONVERSATION_IDLE_MINUTES`, default 60), `moderator`, or `restarted`
-(retained for rows written before this change). The idle case is handled in
+So `ended_reason` is one of `completed` (the customer said no), `idle` (the
+follow-up went unanswered, or the backstop elapsed), `moderator`, or
+`restarted` (retained for rows written before this change). The idle case is handled in
 more than one place on purpose -- lazily when the next question arrives, which
 is what keeps threading correct, and in the sweeps, which is what makes the
 recorded end timely. Without that, the interactions that ended quietest would
@@ -325,9 +345,23 @@ are verified against a real PostgreSQL, not reasoned about.
 
 The history tables are created with `LIKE ... EXCLUDING ALL`: same columns, no
 foreign keys, no checks, no cascades. An archive exists to be readable years
-later, and a constraint added to a live table in 2027 must not be able to
-reject a row written in 2026. An open conversation is never archived whatever
-its age, and survey results are never archived at all.
+later, and a rule added to a live table in 2027 must not be able to reject a
+row written in 2026.
+
+`EXCLUDING ALL` does not quite deliver that on its own, which only showed up
+under a real Postgres: `NOT NULL` is part of a column definition rather than a
+table constraint, so it is always copied while the `DEFAULT` that made it
+satisfiable is not. That leaves the worst of both -- add a `NOT NULL DEFAULT`
+column to `tickets` and the archive of an older row would be rejected for a
+column that did not exist when it was written, in a weekly job, on a bank's
+correspondence. The migration therefore drops `NOT NULL` from every history
+column except the primary key and `archived_at`, in a loop over
+`information_schema` rather than a hand-maintained list that would drift out
+of step with the live tables. The archive copies whole rows, so nothing is
+lost by allowing nulls.
+
+An open conversation is never archived whatever its age, and survey results
+are never archived at all.
 
 History travels in the user turn, never the cached system prefix. The prefix
 must stay byte-identical for the prompt cache to hit, and history differs on
@@ -341,16 +375,23 @@ Only `final_answer` is replayed, never a draft. A draft nobody approved was
 never part of the conversation, and a rejected one may have been rejected
 precisely because it was wrong.
 
-**Retention now has a mechanism, but the period is still ARDB's call.** The
-weekly archive moves closed conversations out of the live tables after
-`ARCHIVE_AFTER_DAYS`, which keeps the queue small -- but it is an archive, not
-a deletion: the questions and answers are still in Postgres, in the history
-tables, indefinitely. That is deliberate, because destroying a bank's customer
-correspondence on a default nobody chose would be worse than keeping it. What
-is still missing is the decision about how long the history itself may be kept
-and what happens at the end of it, which is a compliance question rather than
-an engineering one. Deleting from the history tables is a one-line change once
-that period is set.
+**Retention is ten years.** The weekly archive moves closed conversations out
+of the live tables after `ARCHIVE_AFTER_DAYS` (7), and the same weekly run
+deletes archived interactions once they pass `HISTORY_RETENTION_YEARS` (10).
+Both halves run in one job so their scheduling cannot drift apart.
+
+The clock runs from the date of the interaction itself -- `ended_at` -- not
+from `archived_at`, because the period a compliance policy means starts when
+the conversation happened, not when a cron job happened to move it a week
+later. Deletion is driven off the conversation and takes its tickets and
+events with it, rather than deleting each table by its own age: a ticket
+created days before its conversation ended is older than the conversation, and
+deleting by age alone would leave interactions half-present in the archive.
+Satisfaction results are on the same clock but measured from when they were
+given, since by then they have outlived the conversation they rate and have no
+parent to drive from -- they carry the customer's chat and user id, so keeping
+them for ever would keep identifying data for ever, and a score from eleven
+years ago informs nothing.
 
 **Drafting is pluggable, and optional.** `DRAFT_PROVIDER` picks between
 `workers-ai` (the default), `claude`, `github`, and `none`. The handler holds a

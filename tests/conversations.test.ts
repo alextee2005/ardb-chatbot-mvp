@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   conversationRef,
-  isIdle,
+  DEFAULT_FOLLOWUP_MINUTES,
+  DEFAULT_HISTORY_RETENTION_YEARS,
+  DEFAULT_IDLE_MINUTES,
+  isConversationOver,
   isOpen,
   isSurveyScore,
   shouldAskFollowup,
@@ -43,30 +46,65 @@ function turn(overrides: Partial<ConversationTurn> = {}): ConversationTurn {
   };
 }
 
-describe("isIdle", () => {
+describe("isConversationOver", () => {
   const start = new Date("2026-10-19T08:00:00Z");
   const at = (minutes: number) => new Date(start.getTime() + minutes * 60_000);
+  const policy = { followupMinutes: 60, idleMinutes: 60 };
 
-  it("is false before the window and true at or after it", () => {
-    // The boundary is inclusive, so a 60-minute window closes at exactly 60
-    // rather than only at 61.
-    const c = conversation({ lastActivityAt: start });
-    expect(isIdle(c, 60, at(59))).toBe(false);
-    expect(isIdle(c, 60, at(60))).toBe(true);
-    expect(isIdle(c, 60, at(600))).toBe(true);
+  describe("when no follow-up has been sent", () => {
+    it("waits for both windows, not just the idle one", () => {
+      // The backstop. A conversation whose last question is still unanswered
+      // never becomes eligible for a follow-up, so without the sum it would
+      // stay open for ever and never be surveyed.
+      const c = conversation({ lastActivityAt: start });
+      expect(isConversationOver(c, policy, at(60))).toBe(false);
+      expect(isConversationOver(c, policy, at(119))).toBe(false);
+      expect(isConversationOver(c, policy, at(120))).toBe(true);
+    });
+
+    it("leaves room for the follow-up to be asked first", () => {
+      // The bug this guards against, and the reason the two windows are
+      // separate numbers. The sweep closes conversations before it asks
+      // follow-ups, and only an open conversation can be asked. If closing
+      // came due at the same instant as asking, the follow-up would never be
+      // sent -- the feature would go quiet with nothing failing.
+      const c = conversation({ lastActivityAt: start, questionCount: 1 });
+      const askAt = at(policy.followupMinutes);
+      expect(
+        shouldAskFollowup(c, { ...policy, hasPendingQuestion: false, now: askAt }),
+      ).toBe(true);
+      expect(isConversationOver(c, policy, askAt)).toBe(false);
+    });
   });
 
-  it("measures from the last activity, not the start", () => {
-    // A long conversation that is still going must not be cut off mid-thread.
-    const c = conversation({ startedAt: start, lastActivityAt: at(90) });
-    expect(isIdle(c, 60, at(100))).toBe(false);
+  describe("when a follow-up has been sent", () => {
+    it("measures from the follow-up, not the last activity", () => {
+      // The customer was asked a direct question; the clock restarts from the
+      // asking, so they get the full window to answer it.
+      const c = conversation({ lastActivityAt: start, followupSentAt: at(60) });
+      expect(isConversationOver(c, policy, at(119))).toBe(false);
+      expect(isConversationOver(c, policy, at(120))).toBe(true);
+    });
+
+    it("does not inherit the longer unsent-follow-up deadline", () => {
+      // A follow-up sent late must not get both windows again.
+      const c = conversation({ lastActivityAt: start, followupSentAt: at(200) });
+      expect(isConversationOver(c, policy, at(259))).toBe(false);
+      expect(isConversationOver(c, policy, at(260))).toBe(true);
+    });
   });
 
   it("is never true for a conversation already closed", () => {
     // Otherwise the sweep would keep rewriting ended_at and move the recorded
     // end of an interaction every time it ran.
     const c = conversation({ status: "closed", lastActivityAt: start });
-    expect(isIdle(c, 60, at(600))).toBe(false);
+    expect(isConversationOver(c, policy, at(6000))).toBe(false);
+  });
+
+  it("measures from the last activity, not the start", () => {
+    // A long conversation that is still going must not be cut off mid-thread.
+    const c = conversation({ startedAt: start, lastActivityAt: at(300) });
+    expect(isConversationOver(c, policy, at(310))).toBe(false);
   });
 });
 
@@ -132,19 +170,19 @@ describe("renderHistory", () => {
 describe("shouldAskFollowup", () => {
   const start = new Date("2026-10-19T08:00:00Z");
   const at = (minutes: number) => new Date(start.getTime() + minutes * 60_000);
-  const answered = { followupMinutes: 3, hasPendingQuestion: false, now: at(3) };
+  const answered = { followupMinutes: 60, hasPendingQuestion: false, now: at(60) };
 
   it("asks once the window has passed with nothing pending", () => {
     const c = conversation({ lastActivityAt: start, questionCount: 1 });
     expect(shouldAskFollowup(c, answered)).toBe(true);
-    expect(shouldAskFollowup(c, { ...answered, now: at(2) })).toBe(false);
+    expect(shouldAskFollowup(c, { ...answered, now: at(59) })).toBe(false);
   });
 
   it("never asks while a question is still waiting for an answer", () => {
-    // The guard that matters most. "Is there anything else?" sent while the
-    // customer is still waiting reads as though the bot forgot the question --
-    // and at a three-minute threshold an unanswered ticket is the normal case,
-    // not an edge one.
+    // "Is there anything else?" sent while the customer is still waiting
+    // reads as though the bot forgot the question. At an hour it is rarer than
+    // it was at three minutes, but a question stuck in the queue overnight is
+    // exactly when it would be most insulting.
     const c = conversation({ lastActivityAt: start, questionCount: 1 });
     expect(shouldAskFollowup(c, { ...answered, hasPendingQuestion: true })).toBe(false);
     expect(shouldAskFollowup(c, { ...answered, hasPendingQuestion: true, now: at(600) })).toBe(
@@ -153,8 +191,8 @@ describe("shouldAskFollowup", () => {
   });
 
   it("asks only once per answer", () => {
-    const c = conversation({ lastActivityAt: start, questionCount: 1, followupSentAt: at(3) });
-    expect(shouldAskFollowup(c, { ...answered, now: at(10) })).toBe(false);
+    const c = conversation({ lastActivityAt: start, questionCount: 1, followupSentAt: at(60) });
+    expect(shouldAskFollowup(c, { ...answered, now: at(600) })).toBe(false);
   });
 
   it("does not ask when nothing was ever asked", () => {
@@ -200,5 +238,45 @@ describe("isSurveyScore", () => {
   it("accepts 1 to 5 and nothing else", () => {
     for (const score of [1, 2, 3, 4, 5]) expect(isSurveyScore(score)).toBe(true);
     for (const bad of [0, 6, -1, 2.5, Number.NaN, 100]) expect(isSurveyScore(bad)).toBe(false);
+  });
+});
+
+describe("the shipped defaults", () => {
+  const start = new Date("2026-10-19T08:00:00Z");
+  const at = (minutes: number) => new Date(start.getTime() + minutes * 60_000);
+  const policy = {
+    followupMinutes: DEFAULT_FOLLOWUP_MINUTES,
+    idleMinutes: DEFAULT_IDLE_MINUTES,
+  };
+
+  it("are 30 minutes to the follow-up and 60 more to the close", () => {
+    expect(DEFAULT_FOLLOWUP_MINUTES).toBe(30);
+    expect(DEFAULT_IDLE_MINUTES).toBe(60);
+    expect(DEFAULT_HISTORY_RETENTION_YEARS).toBe(10);
+  });
+
+  it("ask the follow-up strictly before closing the conversation", () => {
+    // The invariant, asserted against whatever the defaults become rather
+    // than against 30 and 60. The sweep closes conversations before it asks
+    // follow-ups and only an open conversation can be asked, so if these ever
+    // came due together the follow-up would silently never be sent.
+    const c = conversation({ lastActivityAt: start, questionCount: 1 });
+
+    const askAt = policy.followupMinutes;
+    expect(
+      shouldAskFollowup(c, { ...policy, hasPendingQuestion: false, now: at(askAt) }),
+    ).toBe(true);
+    expect(isConversationOver(c, policy, at(askAt))).toBe(false);
+
+    // And the backstop still fires eventually, for a conversation that never
+    // became eligible for a follow-up at all.
+    const backstop = policy.followupMinutes + policy.idleMinutes;
+    expect(isConversationOver(c, policy, at(backstop))).toBe(true);
+  });
+
+  it("give the customer the full idle window to answer the follow-up", () => {
+    const asked = conversation({ lastActivityAt: start, followupSentAt: at(30) });
+    expect(isConversationOver(asked, policy, at(30 + policy.idleMinutes - 1))).toBe(false);
+    expect(isConversationOver(asked, policy, at(30 + policy.idleMinutes))).toBe(true);
   });
 });

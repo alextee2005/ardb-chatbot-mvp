@@ -195,24 +195,45 @@ export class Store {
   }
 
   /**
-   * Close every conversation idle for longer than the window.
+   * Close every conversation whose ending sequence has run out.
    *
-   * Without this, a conversation the customer simply abandoned stays open for
-   * ever and `ended_at` never gets written, so "the end of the interaction" is
-   * missing from exactly the interactions that ended quietest. The next
-   * question would also be threaded onto a stale conversation from days ago.
+   * This is `isConversationOver` in SQL, and the two must agree: the handler
+   * uses the TypeScript version to decide whether an arriving question joins
+   * the old thread or starts a new one, and this decides when the thread is
+   * recorded as finished. If they disagreed, a question could be threaded onto
+   * a conversation this sweep had already closed. A test asserts the two give
+   * the same answer across the boundaries.
    *
-   * The lazy check on arrival handles threading correctly on its own; this
-   * exists so the record is timely rather than only eventually right.
+   * Two branches:
+   *   follow-up sent     -> `idleMinutes` from when it was sent. The customer
+   *                         was asked directly and did not answer.
+   *   follow-up not sent -> `followupMinutes + idleMinutes` from the last
+   *                         activity. The backstop: a conversation whose last
+   *                         question is still unanswered in the queue never
+   *                         becomes eligible for a follow-up, and without the
+   *                         sum would stay open for ever and never be surveyed.
+   *
+   * Without any of this, a conversation the customer simply abandoned stays
+   * open and `ended_at` is never written -- so "the end of the interaction" is
+   * missing from exactly the interactions that ended quietest.
    */
-  async closeIdleConversations(idleMinutes: number, limit: number): Promise<Conversation[]> {
+  async closeExpiredConversations(
+    policy: { followupMinutes: number; idleMinutes: number },
+    limit: number,
+  ): Promise<Conversation[]> {
     const rows = await this.sql`
       UPDATE conversations
       SET status = 'closed', ended_at = now(), ended_reason = 'idle'
       WHERE id IN (
         SELECT id FROM conversations
         WHERE status = 'open'
-          AND last_activity_at < now() - make_interval(mins => ${idleMinutes})
+          AND (
+            CASE WHEN followup_sent_at IS NOT NULL
+              THEN followup_sent_at < now() - make_interval(mins => ${policy.idleMinutes})
+              ELSE last_activity_at
+                   < now() - make_interval(mins => ${policy.followupMinutes + policy.idleMinutes})
+            END
+          )
         ORDER BY last_activity_at
         LIMIT ${limit}
       )
@@ -735,6 +756,79 @@ export class Store {
       tickets: tickets.length,
       events: events.length,
     };
+  }
+
+  /**
+   * Delete archived interactions past the retention period.
+   *
+   * The archive keeps correspondence readable; this is what stops it being
+   * kept for ever. Driven off `conversations_history.ended_at` -- the date of
+   * the interaction itself, not `archived_at` -- because the retention clock a
+   * compliance policy means is the one that starts when the conversation
+   * happened, not when a cron job happened to move it a week later.
+   *
+   * Children first, and selected by their parent rather than by their own age,
+   * so an interaction is never half-deleted: a ticket created days before the
+   * conversation ended must not outlive it, and nor must it be removed while
+   * its conversation remains.
+   *
+   * The history tables carry no foreign keys, so nothing enforces that for
+   * us -- which is exactly why the order is explicit here.
+   */
+  async purgeHistory(
+    retentionYears: number,
+    limit: number,
+  ): Promise<{ conversations: number; tickets: number; events: number; surveys: number }> {
+    const chosen = await this.sql`
+      SELECT id FROM conversations_history
+      WHERE ended_at IS NOT NULL
+        AND ended_at < now() - make_interval(years => ${retentionYears})
+      ORDER BY ended_at
+      LIMIT ${limit}
+    `;
+    const ids = chosen.map((row) => Number((row as Row).id));
+
+    let events = 0;
+    let tickets = 0;
+    let conversations = 0;
+
+    if (ids.length > 0) {
+      const purgedEvents = await this.sql`
+        DELETE FROM ticket_events_history
+        WHERE ticket_id IN (
+          SELECT id FROM tickets_history WHERE conversation_id = ANY(${ids}::bigint[])
+        )
+        RETURNING id
+      `;
+      const purgedTickets = await this.sql`
+        DELETE FROM tickets_history
+        WHERE conversation_id = ANY(${ids}::bigint[])
+        RETURNING id
+      `;
+      const purgedConversations = await this.sql`
+        DELETE FROM conversations_history WHERE id = ANY(${ids}::bigint[])
+        RETURNING id
+      `;
+      events = purgedEvents.length;
+      tickets = purgedTickets.length;
+      conversations = purgedConversations.length;
+    }
+
+    // Surveys are on the same clock. They are aggregate feedback rather than
+    // correspondence, but they carry the customer's chat and user id, so
+    // keeping them indefinitely would keep identifying data indefinitely --
+    // and a satisfaction score from eleven years ago informs nothing.
+    //
+    // Deleted by their own date because a survey deliberately outlives the
+    // conversation it rates: by the time it is this old its conversation_id
+    // has long been NULL, so there is no parent to drive from.
+    const purgedSurveys = await this.sql`
+      DELETE FROM conversation_surveys
+      WHERE responded_at < now() - make_interval(years => ${retentionYears})
+      RETURNING id
+    `;
+
+    return { conversations, tickets, events, surveys: purgedSurveys.length };
   }
 
   async recordEvent(input: {

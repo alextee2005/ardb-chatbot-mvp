@@ -266,8 +266,14 @@ export default {
       (async () => {
         if (event.cron === WEEKLY_ARCHIVE_CRON) {
           await guard("weekly archive", async () => {
-            const summary = await store.archiveClosedConversations(
+            const archived = await store.archiveClosedConversations(
               config.archiveAfterDays,
+              config.archiveBatchSize,
+            );
+            // Purged after archiving, in the same run, so the two halves of
+            // the retention policy cannot drift apart in scheduling.
+            const purged = await store.purgeHistory(
+              config.historyRetentionYears,
               config.archiveBatchSize,
             );
             // Always logged, including a run that moved nothing: this one runs
@@ -278,7 +284,9 @@ export default {
                 level: "info",
                 msg: "weekly archive",
                 olderThanDays: config.archiveAfterDays,
-                ...summary,
+                retentionYears: config.historyRetentionYears,
+                archived,
+                purged,
               }),
             );
           });
@@ -293,6 +301,7 @@ export default {
               moderatorChatId: config.moderatorChatId,
               policy: config.sla,
               conversationIdleMinutes: config.conversationIdleMinutes,
+              followupMinutes: config.followupMinutes,
             });
             // Only worth a log line when the sweep did something; an idle
             // queue sweeping every five minutes would drown the logs.
@@ -386,6 +395,7 @@ async function processUpdate(
       moderatorChatId: config.moderatorChatId,
       rateLimitPerMinute: config.rateLimitPerMinute,
       conversationIdleMinutes: config.conversationIdleMinutes,
+      followupMinutes: config.followupMinutes,
     };
 
     const text = message.text?.trim();

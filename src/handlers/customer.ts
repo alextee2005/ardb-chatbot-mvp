@@ -4,7 +4,7 @@
 
 import { displayName, type TelegramClient, type TelegramMessage } from "../adapters/telegram.js";
 import type { Store } from "../adapters/store.js";
-import { isIdle, MAX_HISTORY_TURNS } from "../core/conversations.js";
+import { isConversationOver, MAX_HISTORY_TURNS } from "../core/conversations.js";
 import { detectLanguage } from "../core/language.js";
 import { CUSTOMER_MESSAGES } from "../core/messages.js";
 import { renderCard } from "../core/moderator-card.js";
@@ -28,10 +28,13 @@ export interface CustomerContext {
   moderatorChatId: number;
   rateLimitPerMinute: number;
   /**
-   * How long a conversation may sit idle before the next question is treated
-   * as the start of a new interaction rather than a follow-up.
+   * The two windows of the ending sequence. Both are needed here, not just the
+   * idle one: whether an arriving question joins the old thread is decided by
+   * `isConversationOver`, which measures from the follow-up when one was sent
+   * and from the last activity plus both windows when none was.
    */
   conversationIdleMinutes: number;
+  followupMinutes: number;
 }
 
 export async function handleStart(
@@ -91,7 +94,14 @@ export async function handleQuestion(
   // threading correct, and a question must never be drafted as a follow-up to
   // a conversation that had already ended.
   const existing = await ctx.store.getOpenConversation(message.chat.id);
-  if (existing && isIdle(existing, ctx.conversationIdleMinutes, new Date())) {
+  if (
+    existing &&
+    isConversationOver(
+      existing,
+      { followupMinutes: ctx.followupMinutes, idleMinutes: ctx.conversationIdleMinutes },
+      new Date(),
+    )
+  ) {
     await ctx.store.closeConversation(message.chat.id, "idle");
   }
 

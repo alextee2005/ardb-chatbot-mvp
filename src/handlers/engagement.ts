@@ -157,11 +157,22 @@ async function sendSurveys(ctx: EngagementContext): Promise<number> {
 export async function runEngagementSweep(
   ctx: EngagementContext,
 ): Promise<EngagementSummary> {
-  // Closing idle conversations here as well as in the SLA sweep is deliberate.
-  // This sweep runs every minute and the SLA sweep every five, and a customer
-  // who has gone quiet should get their survey promptly rather than up to five
-  // minutes late. Both paths claim in SQL, so running both is harmless.
-  const closed = await ctx.store.closeIdleConversations(ctx.idleMinutes, MAX_PER_SWEEP);
+  // Closed before follow-ups are asked, and that order is safe only because
+  // the two windows are sequential: a conversation becomes eligible for a
+  // follow-up at `followupMinutes`, and eligible for closing `idleMinutes`
+  // after the follow-up was sent. If closing used the same instant as asking,
+  // this line would close the conversation in the same pass that should have
+  // asked it -- and since only an open conversation can be asked, the
+  // follow-up would never be sent at all.
+  //
+  // Doing it here as well as in the SLA sweep is deliberate: this runs every
+  // minute, so a customer who has gone quiet gets their survey promptly rather
+  // than up to five minutes late. Both paths claim in SQL, so both is
+  // harmless.
+  const closed = await ctx.store.closeExpiredConversations(
+    { followupMinutes: ctx.followupMinutes, idleMinutes: ctx.idleMinutes },
+    MAX_PER_SWEEP,
+  );
   if (closed.length > 0) {
     console.log(
       JSON.stringify({

@@ -67,17 +67,45 @@ export interface ConversationTurn {
   askedAt: Date;
 }
 
-/** How long a conversation may sit idle before it is considered over. */
-export const DEFAULT_IDLE_MINUTES = 60;
+/**
+ * How long after the last activity to ask whether anything else is needed.
+ *
+ * The first half of the ending sequence:
+ *
+ *   last activity --30 min--> "is there anything else?"
+ *                               |-- No  --> closed, 'completed'
+ *                               |-- Yes --> back to the start
+ *                               `-- ignored --60 min--> closed, 'idle'
+ *
+ * So an abandoned interaction is recorded as over 90 minutes after the last
+ * activity, and one the customer answers ends the moment they answer it.
+ */
+export const DEFAULT_FOLLOWUP_MINUTES = 30;
 
 /**
- * How long after the last answer to ask whether anything else is needed.
+ * How long to wait for an answer to the follow-up before giving up.
  *
- * Short on purpose: the point is to catch the customer while they are still
- * reading the answer, so an interaction ends because they said so rather than
- * because it timed out an hour later.
+ * Measured from when the follow-up was sent, not from the last activity, and
+ * that distinction is why this is a separate number rather than one window
+ * reused. Were both measured from the same instant and set to the same value,
+ * the idle close and the follow-up would come due in the same sweep -- and
+ * because the sweep closes conversations before it asks follow-ups, and only
+ * an open conversation can be asked, the follow-up would never be sent at all.
+ * The feature would go quiet with nothing failing.
+ *
+ * The shipped defaults (30 and 60) do not collide, but the ordering is what
+ * makes that safe rather than lucky, and a test asserts it for whatever the
+ * defaults become.
  */
-export const DEFAULT_FOLLOWUP_MINUTES = 3;
+export const DEFAULT_IDLE_MINUTES = 60;
+
+/** The two windows that decide when an interaction is over. */
+export interface ConversationPolicy {
+  /** Quiet minutes after the last activity before asking "anything else?". */
+  followupMinutes: number;
+  /** Quiet minutes after that question before closing it unanswered. */
+  idleMinutes: number;
+}
 
 export function isOpen(conversation: Conversation): boolean {
   return conversation.status === "open";
@@ -91,18 +119,39 @@ export function conversationRef(conversation: Pick<Conversation, "id">): string 
 /**
  * Whether a conversation has been quiet long enough to call it ended.
  *
+ * Two branches, because the clock restarts when the follow-up is sent:
+ *
+ *   follow-up sent     -> idleMinutes from the moment it was sent. The
+ *                         customer was asked a direct question and did not
+ *                         answer it.
+ *   follow-up not sent -> followupMinutes + idleMinutes from the last
+ *                         activity. This is the backstop. A conversation whose
+ *                         last question is still sitting unanswered in the
+ *                         queue never becomes eligible for a follow-up, and
+ *                         without the sum it would stay open for ever and
+ *                         never be surveyed.
+ *
  * Takes `now` explicitly rather than reading the clock, so the boundary is
  * testable rather than something to approximate with a sleep.
  */
-export function isIdle(
+export function isConversationOver(
   conversation: Conversation,
-  idleMinutes: number,
+  policy: ConversationPolicy,
   now: Date,
 ): boolean {
   if (!isOpen(conversation)) return false;
-  const idleMs = idleMinutes * 60_000;
-  return now.getTime() - conversation.lastActivityAt.getTime() >= idleMs;
+
+  if (conversation.followupSentAt !== null) {
+    const elapsed = now.getTime() - conversation.followupSentAt.getTime();
+    return elapsed >= policy.idleMinutes * 60_000;
+  }
+
+  const elapsed = now.getTime() - conversation.lastActivityAt.getTime();
+  return elapsed >= (policy.followupMinutes + policy.idleMinutes) * 60_000;
 }
+
+/** How long an archived interaction is kept before it is deleted outright. */
+export const DEFAULT_HISTORY_RETENTION_YEARS = 10;
 
 /**
  * How many earlier turns to put in front of the model.

@@ -21,8 +21,9 @@ export interface SlaContext {
   store: Store;
   moderatorChatId: number;
   policy: SlaPolicy;
-  /** Idle minutes after which an interaction is recorded as ended. */
+  /** The two windows of the ending sequence; see `isConversationOver`. */
   conversationIdleMinutes: number;
+  followupMinutes: number;
 }
 
 /** Bounds one sweep's work, so a backlog cannot blow the CPU limit. */
@@ -122,8 +123,8 @@ export async function runSlaSweep(
   // Last in the sweep, and deliberately not allowed to fail the rest: nudging
   // a moderator about a waiting customer matters more than a timestamp.
   try {
-    const closed = await ctx.store.closeIdleConversations(
-      ctx.conversationIdleMinutes,
+    const closed = await ctx.store.closeExpiredConversations(
+      { followupMinutes: ctx.followupMinutes, idleMinutes: ctx.conversationIdleMinutes },
       MAX_CONVERSATIONS_PER_SWEEP,
     );
     summary.conversationsClosed = closed.length;

@@ -86,10 +86,18 @@
     // drafted as a follow-up, and the old one gets an ended_at.
     "CONVERSATION_IDLE_MINUTES": "60",
 
-    // Minutes after the last answer before the bot asks whether anything else
-    // is needed. Short on purpose: the point is to catch the customer while
-    // they are still reading the answer.
-    "FOLLOWUP_MINUTES": "3",
+    // The ending sequence. 30 quiet minutes after the last activity the bot
+    // asks whether anything else is needed; if that question goes unanswered
+    // for a further CONVERSATION_IDLE_MINUTES the interaction is recorded as
+    // over and the survey goes out. An interaction the customer answers ends
+    // when they answer it; an abandoned one is closed 90 minutes after the
+    // last activity.
+    //
+    // FOLLOWUP_MINUTES must stay below CONVERSATION_IDLE_MINUTES + itself for
+    // the follow-up to be asked before the conversation is closed. The
+    // windows are sequential rather than racing, so this holds for any
+    // positive values, and a test asserts it.
+    "FOLLOWUP_MINUTES": "30",
 
     // How long a closed conversation stays in the live tables before the
     // weekly archive moves it to the history tables, and how many are moved
@@ -97,6 +105,12 @@
     // what they need and outlive the conversation they rate.
     "ARCHIVE_AFTER_DAYS": "7",
     "ARCHIVE_BATCH_SIZE": "200",
+
+    // How long an archived interaction is kept before it is deleted outright.
+    // Measured from the date of the interaction itself, not from the day the
+    // archive happened to move it. Satisfaction results are deleted on the
+    // same clock, measured from when they were given.
+    "HISTORY_RETENTION_YEARS": "10",
     "LOG_LEVEL": "info",
 
     // Minutes of silence before the moderator group is nudged, the minimum
