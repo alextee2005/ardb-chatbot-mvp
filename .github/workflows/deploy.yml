@@ -19,9 +19,19 @@ name: Deploy the bot
 #   MODERATOR_CHAT_ID         the private group's negative chat ID
 #   DATABASE_URL              Neon, pooled (hostname contains -pooler)
 #
+# Required when DRAFT_PROVIDER is "github" in wrangler.jsonc:
+#   DISPATCH_TOKEN            a fine-grained token with Contents: write on
+#                             this repository only. Named without the GITHUB_
+#                             prefix because GitHub refuses to create a secret
+#                             that starts with it -- the workflow sets it on
+#                             the Worker as GITHUB_DISPATCH_TOKEN, which is
+#                             what src/config.ts reads.
+#
 # Optional:
 #   CLOUDFLARE_ACCOUNT_ID     only if the token can see several accounts
-#   ANTHROPIC_API_KEY         only if you switch DRAFT_PROVIDER to "claude"
+#   ANTHROPIC_API_KEY         only when DRAFT_PROVIDER is "claude" (the
+#                             "github" route uses it in the drafting workflow,
+#                             not on the Worker)
 on:
   workflow_dispatch:
     inputs:
@@ -74,6 +84,8 @@ jobs:
           TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
           MODERATOR_CHAT_ID: ${{ secrets.MODERATOR_CHAT_ID }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DISPATCH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+          THIS_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
           missing=()
@@ -109,7 +121,31 @@ jobs:
             exit 1
           fi
 
-          echo "All five secrets are present and well-formed."
+          # Which provider the Worker will run decides whether the dispatch
+          # token is required, and that lives in wrangler.jsonc rather than
+          # here. Read with grep because wrangler.jsonc carries comments and
+          # so is not valid JSON for jq.
+          provider="$(grep -oE '"DRAFT_PROVIDER"[[:space:]]*:[[:space:]]*"[a-z-]+"' wrangler.jsonc \
+            | grep -oE '"[a-z-]+"$' | tr -d '"' || true)"
+          echo "DRAFT_PROVIDER in wrangler.jsonc: ${provider:-unset}"
+
+          if [ "${provider}" = "github" ]; then
+            if [ -z "${DISPATCH_TOKEN:-}" ]; then
+              echo "::error::DRAFT_PROVIDER is \"github\", so the Worker needs a token to trigger the drafting workflow. Add a repository secret named DISPATCH_TOKEN -- a fine-grained token with Contents: write on this repository only. It cannot be called GITHUB_DISPATCH_TOKEN: GitHub refuses secret names starting with GITHUB_, so this workflow renames it when setting it on the Worker."
+              exit 1
+            fi
+
+            # A dispatch aimed at the wrong repository is silent: the Worker
+            # gets a 404 it reports on the card, or worse a 204 from someone
+            # else's workflow. Cheap to check here.
+            configured="$(grep -oE '"GITHUB_REPOSITORY"[[:space:]]*:[[:space:]]*"[^"]+"' wrangler.jsonc \
+              | sed -E 's/.*"GITHUB_REPOSITORY"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' || true)"
+            if [ -n "${configured}" ] && [ "${configured}" != "${THIS_REPOSITORY}" ]; then
+              echo "::warning::wrangler.jsonc points GITHUB_REPOSITORY at ${configured}, but this workflow is running in ${THIS_REPOSITORY}. Drafting dispatches will go to ${configured}."
+            fi
+          fi
+
+          echo "All required secrets are present and well-formed."
 
       - name: Typecheck and test
         # A deploy of code that does not compile is worse than no deploy: the
@@ -153,6 +189,7 @@ jobs:
           MODERATOR_CHAT_ID: ${{ secrets.MODERATOR_CHAT_ID }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DISPATCH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
         run: |
           set -euo pipefail
 
@@ -175,6 +212,13 @@ jobs:
           if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
             args+=(--arg anthropic "${ANTHROPIC_API_KEY}")
             filter="${filter} + {ANTHROPIC_API_KEY: \$anthropic}"
+          fi
+          # Renamed on the way in: GitHub will not hold a secret called
+          # GITHUB_DISPATCH_TOKEN, but that is the name src/config.ts reads,
+          # and Cloudflare has no such restriction.
+          if [ -n "${DISPATCH_TOKEN:-}" ]; then
+            args+=(--arg dispatch "${DISPATCH_TOKEN}")
+            filter="${filter} + {GITHUB_DISPATCH_TOKEN: \$dispatch}"
           fi
 
           jq -n "${args[@]}" "${filter}" | npx wrangler secret bulk

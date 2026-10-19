@@ -149,6 +149,13 @@ done
 # work, a person writes every answer. `/health` reports which mode it is in.
 npx wrangler secret put ANTHROPIC_API_KEY
 
+# Only for DRAFT_PROVIDER="github": a fine-grained token with Contents:
+# write on this repository, so the Worker can trigger the drafting workflow.
+# As a GitHub repository secret it must be named DISPATCH_TOKEN instead --
+# GitHub refuses secret names starting with GITHUB_ -- and the deploy
+# workflow renames it when setting it here.
+npx wrangler secret put GITHUB_DISPATCH_TOKEN
+
 npm run check     # typecheck + tests
 npm run deploy
 ```

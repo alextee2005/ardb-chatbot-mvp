@@ -39,6 +39,12 @@ ANTHROPIC_API_KEY=
 # it quotes.
 #   GitHub -> Settings -> Developer settings -> Personal access tokens ->
 #   Fine-grained tokens -> Generate new token
+#
+# As a *repository secret* it must be called DISPATCH_TOKEN, not this name:
+# GitHub refuses any secret name beginning with GITHUB_. The deploy workflow
+# reads DISPATCH_TOKEN and sets it on the Worker as GITHUB_DISPATCH_TOKEN,
+# which is the name src/config.ts reads. Cloudflare has no such restriction,
+# so this file and the Worker both use the real name.
 GITHUB_DISPATCH_TOKEN=
 
 # Neon connection string, e.g.
