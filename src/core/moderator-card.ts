@@ -8,6 +8,7 @@
  */
 
 import { encodeCallback } from "./callbacks.js";
+import type { ConversationTurn } from "./conversations.js";
 import { languageLabel } from "./language.js";
 import { hasSendableDraft, ticketRef, type Ticket } from "./tickets.js";
 
@@ -40,6 +41,12 @@ const MAX_DRAFT_CHARS = 2400;
  * question along with it.
  */
 const MAX_ERROR_CHARS = 600;
+/**
+ * The previous exchange, shown so a moderator can answer a follow-up without
+ * leaving the group. Tighter than the draft: the draft is what they are
+ * approving, this is only orientation.
+ */
+const MAX_HISTORY_CHARS = 320;
 
 function clamp(text: string, limit: number): string {
   if (text.length <= limit) return text;
@@ -54,13 +61,61 @@ function customerLine(ticket: Ticket): string {
   return `${name}${handle} · <code>${ticket.customerUserId}</code>`;
 }
 
-export function renderCard(ticket: Ticket): string {
+/**
+ * Extra context for the card beyond the ticket itself.
+ *
+ * Optional, so every existing caller stays correct and a card without it
+ * renders exactly as it did before conversations existed.
+ */
+export interface CardContext {
+  /** Earlier turns of this conversation, oldest first. */
+  turns?: readonly ConversationTurn[];
+}
+
+/**
+ * The conversation banner.
+ *
+ * A moderator seeing only "what about for a group?" cannot answer it. This
+ * says there is a thread, how far into it this question is, and what was said
+ * last -- the single most useful turn, since a follow-up almost always refers
+ * to the one immediately before it.
+ */
+function historyLines(ticket: Ticket, turns: readonly ConversationTurn[]): string[] {
+  const position = `question ${turns.length + 1}`;
+  const label =
+    ticket.conversationId === null
+      ? `<b>Conversation:</b> ${position}`
+      : `<b>Conversation:</b> <code>C${ticket.conversationId}</code> · ${position}`;
+
+  const lines = ["", label];
+
+  const previous = turns[turns.length - 1];
+  if (!previous) return lines;
+
+  const earlier = turns.length - 1;
+  lines.push(
+    "",
+    `<b>Previously${earlier > 0 ? ` (and ${earlier} turn${earlier === 1 ? "" : "s"} before that)` : ""}</b>`,
+    `<blockquote>${escapeHtml(clamp(previous.question, MAX_HISTORY_CHARS))}</blockquote>`,
+    previous.answer
+      ? `<blockquote>${escapeHtml(clamp(previous.answer, MAX_HISTORY_CHARS))}</blockquote>`
+      : "<i>No answer was sent for that question.</i>",
+  );
+
+  return lines;
+}
+
+export function renderCard(ticket: Ticket, context: CardContext = {}): string {
   const ref = ticketRef(ticket);
+  const turns = context.turns ?? [];
   const lines: string[] = [
     `<b>${ref} — ${statusHeadline(ticket)}</b>`,
     "",
     `<b>From:</b> ${customerLine(ticket)}`,
     `<b>Answer in:</b> ${languageLabel(ticket.questionLanguage)}`,
+    // Only when there is a thread worth mentioning. A first question reads as
+    // it always did, with no banner implying history that does not exist.
+    ...(turns.length > 0 ? historyLines(ticket, turns) : []),
     "",
     "<b>Question</b>",
     `<blockquote>${escapeHtml(clamp(ticket.question, MAX_QUESTION_CHARS))}</blockquote>`,

@@ -8,6 +8,12 @@
 
 import { neon, type NeonQueryFunction } from "@neondatabase/serverless";
 
+import type {
+  Conversation,
+  ConversationEndReason,
+  ConversationStatus,
+  ConversationTurn,
+} from "../core/conversations.js";
 import type { Language } from "../core/language.js";
 import type { Ticket, TicketStatus } from "../core/tickets.js";
 
@@ -16,6 +22,10 @@ type Row = Record<string, unknown>;
 function toTicket(row: Row): Ticket {
   return {
     id: Number(row.id),
+    conversationId:
+      row.conversation_id === null || row.conversation_id === undefined
+        ? null
+        : Number(row.conversation_id),
     customerChatId: Number(row.customer_chat_id),
     customerUserId: Number(row.customer_user_id),
     customerName: String(row.customer_name),
@@ -41,7 +51,22 @@ function toTicket(row: Row): Ticket {
   };
 }
 
+function toConversation(row: Row): Conversation {
+  return {
+    id: Number(row.id),
+    customerChatId: Number(row.customer_chat_id),
+    customerUserId: Number(row.customer_user_id),
+    status: String(row.status) as ConversationStatus,
+    endedReason: (row.ended_reason as ConversationEndReason | null) ?? null,
+    questionCount: Number(row.question_count ?? 0),
+    startedAt: new Date(String(row.started_at)),
+    lastActivityAt: new Date(String(row.last_activity_at)),
+    endedAt: row.ended_at ? new Date(String(row.ended_at)) : null,
+  };
+}
+
 export interface NewTicket {
+  conversationId: number;
   customerChatId: number;
   customerUserId: number;
   customerName: string;
@@ -85,16 +110,145 @@ export class Store {
   async createTicket(input: NewTicket): Promise<Ticket> {
     const rows = await this.sql`
       INSERT INTO tickets (
-        customer_chat_id, customer_user_id, customer_name, customer_username,
-        question, question_language, knowledge_version, status
+        conversation_id, customer_chat_id, customer_user_id, customer_name,
+        customer_username, question, question_language, knowledge_version, status
       ) VALUES (
-        ${input.customerChatId}, ${input.customerUserId}, ${input.customerName},
-        ${input.customerUsername}, ${input.question}, ${input.questionLanguage},
-        ${input.knowledgeVersion}, 'drafting'
+        ${input.conversationId}, ${input.customerChatId}, ${input.customerUserId},
+        ${input.customerName}, ${input.customerUsername}, ${input.question},
+        ${input.questionLanguage}, ${input.knowledgeVersion}, 'drafting'
       )
       RETURNING *
     `;
     return toTicket(rows[0] as Row);
+  }
+
+  // ---------------------------------------------------------------------
+  // Conversations
+  // ---------------------------------------------------------------------
+
+  /**
+   * The open conversation for this chat, starting one if there is none.
+   *
+   * One statement, not a SELECT followed by an INSERT. Two questions arriving
+   * in the same second would both find no conversation and both create one,
+   * and the thread would be split in half with no error to show for it. The
+   * partial unique index makes the second one conflict, and the conflict path
+   * is also the "another question in the same conversation" path -- so the
+   * common case and the race resolve through the same branch.
+   *
+   * `question_count` is incremented here rather than when the ticket is
+   * written, because this is the statement that is atomic.
+   */
+  async openConversation(input: {
+    customerChatId: number;
+    customerUserId: number;
+  }): Promise<Conversation> {
+    const rows = await this.sql`
+      INSERT INTO conversations (customer_chat_id, customer_user_id, question_count)
+      VALUES (${input.customerChatId}, ${input.customerUserId}, 1)
+      ON CONFLICT (customer_chat_id) WHERE status = 'open'
+      DO UPDATE SET
+        last_activity_at = now(),
+        question_count = conversations.question_count + 1
+      RETURNING *
+    `;
+    return toConversation(rows[0] as Row);
+  }
+
+  /** The open conversation for a chat, or null. Does not create or touch one. */
+  async getOpenConversation(customerChatId: number): Promise<Conversation | null> {
+    const rows = await this.sql`
+      SELECT * FROM conversations
+      WHERE customer_chat_id = ${customerChatId} AND status = 'open'
+    `;
+    return rows.length > 0 ? toConversation(rows[0] as Row) : null;
+  }
+
+  /**
+   * End the open conversation for a chat, if there is one.
+   *
+   * Returns the conversation that was closed, or null when there was nothing
+   * open -- so a caller can tell "ended an interaction" from "there was none",
+   * which is the difference between a returning customer and a new one.
+   */
+  async closeConversation(
+    customerChatId: number,
+    reason: ConversationEndReason,
+  ): Promise<Conversation | null> {
+    const rows = await this.sql`
+      UPDATE conversations
+      SET status = 'closed', ended_at = now(), ended_reason = ${reason}
+      WHERE customer_chat_id = ${customerChatId} AND status = 'open'
+      RETURNING *
+    `;
+    return rows.length > 0 ? toConversation(rows[0] as Row) : null;
+  }
+
+  /**
+   * Close every conversation idle for longer than the window.
+   *
+   * Without this, a conversation the customer simply abandoned stays open for
+   * ever and `ended_at` never gets written, so "the end of the interaction" is
+   * missing from exactly the interactions that ended quietest. The next
+   * question would also be threaded onto a stale conversation from days ago.
+   *
+   * The lazy check on arrival handles threading correctly on its own; this
+   * exists so the record is timely rather than only eventually right.
+   */
+  async closeIdleConversations(idleMinutes: number, limit: number): Promise<Conversation[]> {
+    const rows = await this.sql`
+      UPDATE conversations
+      SET status = 'closed', ended_at = now(), ended_reason = 'idle'
+      WHERE id IN (
+        SELECT id FROM conversations
+        WHERE status = 'open'
+          AND last_activity_at < now() - make_interval(mins => ${idleMinutes})
+        ORDER BY last_activity_at
+        LIMIT ${limit}
+      )
+      RETURNING *
+    `;
+    return rows.map((row) => toConversation(row as Row));
+  }
+
+  /**
+   * The earlier turns of a conversation, oldest first.
+   *
+   * `final_answer` only: the answer the customer actually received. A draft
+   * nobody approved was never part of the conversation, and a rejected one may
+   * have been rejected precisely because it was wrong -- feeding it back would
+   * have the model build on an answer ARDB declined to give.
+   *
+   * Excludes the ticket being drafted, which is already in the prompt as the
+   * question.
+   */
+  async getConversationHistory(
+    conversationId: number,
+    excludeTicketId: number,
+    limit: number,
+  ): Promise<ConversationTurn[]> {
+    const rows = await this.sql`
+      SELECT id, question, question_language, final_answer, created_at
+      FROM tickets
+      WHERE conversation_id = ${conversationId}
+        AND id <> ${excludeTicketId}
+      ORDER BY created_at DESC, id DESC
+      LIMIT ${limit}
+    `;
+    // Fetched newest-first so the LIMIT keeps the most recent turns, then
+    // reversed because the prompt reads oldest-first.
+    return rows
+      .map((row) => {
+        const r = row as Row;
+        return {
+          ticketId: Number(r.id),
+          question: String(r.question),
+          questionLanguage: String(r.question_language) as Language,
+          answer: (r.final_answer as string | null) ?? null,
+          askedAt: new Date(String(r.created_at)),
+        };
+      })
+      .reverse();
   }
 
   async getTicket(id: number): Promise<Ticket | null> {
@@ -205,7 +359,29 @@ export class Store {
         AND status NOT IN ('sent','rejected')
       RETURNING *
     `;
-    return rows.length > 0 ? toTicket(rows[0] as Row) : null;
+    if (rows.length === 0) return null;
+
+    const ticket = toTicket(rows[0] as Row);
+
+    // The interaction is alive until the customer stops writing, not until
+    // ARDB answers. Without this the idle window would run from the question,
+    // so a slow answer could land on a conversation already closed as idle --
+    // and the customer's follow-up would then start a thread of its own,
+    // losing the exchange it was following up on.
+    //
+    // A separate statement because the HTTP driver has no transaction: a
+    // failure here leaves the answer sent and the timestamp stale, which the
+    // idle sweep corrects on its own. The reverse order would risk the
+    // opposite, and an unsent answer is the worse of the two.
+    if (ticket.conversationId !== null) {
+      await this.sql`
+        UPDATE conversations
+        SET last_activity_at = now()
+        WHERE id = ${ticket.conversationId} AND status = 'open'
+      `;
+    }
+
+    return ticket;
   }
 
   /** Questions from this customer in the last minute, for the rate limit. */

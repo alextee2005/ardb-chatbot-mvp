@@ -191,3 +191,63 @@ describe("supportsServerSideFallback", () => {
     expect(supportsServerSideFallback("some-future-model")).toBe(false);
   });
 });
+
+describe("conversation history in the prompt", () => {
+  const knowledge = {
+    version: "test-1",
+    generatedAt: "2026-10-08T00:00:00Z",
+    entries: [{ id: "x", title: "X", url: "https://example.test", content: "Nothing." }],
+  } as unknown as KnowledgeBase;
+
+  const history = [
+    {
+      ticketId: 1,
+      question: "What documents do I need?",
+      questionLanguage: "en" as const,
+      answer: "Your ID card and family book.",
+      askedAt: new Date("2026-10-19T08:00:00Z"),
+    },
+  ];
+
+  const base = {
+    question: "And for a group loan?",
+    questionLanguage: "en" as const,
+    knowledge,
+  };
+
+  it("leaves the cached system prefix byte-identical", () => {
+    // The invariant the whole caching design rests on. History differs on
+    // every request, so if any of it reached the system blocks the cache
+    // would miss on every question and each one would pay full price for the
+    // entire corpus. This is the test that would catch someone "tidying up"
+    // by moving history into the system prompt.
+    const without = buildSystemBlocks(knowledge);
+    const withHistory = buildSystemBlocks(knowledge);
+    expect(JSON.stringify(withHistory)).toBe(JSON.stringify(without));
+
+    const user = buildUserMessage({ ...base, history });
+    expect(user).toContain("What documents do I need?");
+    for (const block of withHistory) {
+      expect(block.text).not.toContain("What documents do I need?");
+    }
+  });
+
+  it("puts the history before the newest question", () => {
+    // So the newest question is the last thing read before the instruction to
+    // answer it, rather than being buried above the thread.
+    const user = buildUserMessage({ ...base, history });
+    expect(user.indexOf("What documents do I need?")).toBeLessThan(
+      user.indexOf("And for a group loan?"),
+    );
+  });
+
+  it("is identical to the old prompt when there is no history", () => {
+    // A first question must be unaffected by the feature existing.
+    expect(buildUserMessage({ ...base, history: [] })).toBe(buildUserMessage(base));
+    expect(buildUserMessage(base)).toContain("A customer sent this question");
+  });
+
+  it("frames the question as the newest of a thread once there is history", () => {
+    expect(buildUserMessage({ ...base, history })).toContain("newest question");
+  });
+});

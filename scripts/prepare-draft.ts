@@ -19,6 +19,7 @@ import { writeFileSync, appendFileSync } from "node:fs";
 import knowledgeJson from "../knowledge/corpus/ardb-corpus.json" with { type: "json" };
 
 import { Store } from "../src/adapters/store.js";
+import { MAX_HISTORY_TURNS } from "../src/core/conversations.js";
 import { buildSystemPrompt, buildUserMessage } from "../src/core/draft.js";
 import type { KnowledgeBase } from "../src/core/knowledge.js";
 import { isTerminal } from "../src/core/tickets.js";
@@ -56,6 +57,13 @@ if (ticket.draft) {
   skip(`Ticket ${ticketId} already has a draft. Not overwriting it.`);
 }
 
+// Earlier turns of this conversation, so the CLI route drafts a follow-up as
+// a follow-up exactly as the Worker does.
+const history =
+  ticket.conversationId !== null
+    ? await store.getConversationHistory(ticket.conversationId, ticket.id, MAX_HISTORY_TURNS)
+    : [];
+
 writeFileSync(`${promptDir}/system.txt`, buildSystemPrompt(knowledge), "utf8");
 writeFileSync(
   `${promptDir}/question.txt`,
@@ -63,11 +71,13 @@ writeFileSync(
     question: ticket.question,
     questionLanguage: ticket.questionLanguage,
     knowledge,
+    history,
   }),
   "utf8",
 );
 
 console.log(
   `Prepared ticket ${ticketId} (${ticket.questionLanguage}, ` +
-    `${ticket.question.length} chars) against corpus ${knowledge.version}.`,
+    `${ticket.question.length} chars, ${history.length} earlier turn(s)) ` +
+    `against corpus ${knowledge.version}.`,
 );

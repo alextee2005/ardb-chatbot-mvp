@@ -11,6 +11,7 @@ import {
 function ticket(overrides: Partial<Ticket> = {}): Ticket {
   return {
     id: 7,
+    conversationId: null,
     customerChatId: 111,
     customerUserId: 111,
     customerName: "Sok Dara",

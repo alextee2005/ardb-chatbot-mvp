@@ -22,6 +22,15 @@ export type TicketStatus =
 
 export interface Ticket {
   id: number;
+  /**
+   * The conversation this question belongs to.
+   *
+   * Nullable because tickets filed before conversations existed have none,
+   * which reads correctly as "no thread was tracked", and because a deleted
+   * conversation leaves its tickets behind rather than taking the audit trail
+   * with it.
+   */
+  conversationId: number | null;
   customerChatId: number;
   customerUserId: number;
   customerName: string;

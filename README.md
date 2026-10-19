@@ -235,6 +235,48 @@ handled in `ctx.waitUntil`. Telegram retries a webhook it considers slow, and a
 retry would file a second ticket for one question — so the fast `200` plus the
 `processed_updates` dedupe table are two halves of one defence.
 
+**A conversation is the unit of interaction, not a question.** `conversations`
+groups the tickets of one Telegram chat, so a customer asking "what documents
+do I need?" and then "and for a group loan?" produces one tracked interaction
+with a start, an end and a question count -- rather than two unrelated tickets,
+the second of which is unanswerable on its own. Earlier turns go to the
+moderator card and into the drafting prompt.
+
+At most one conversation per chat is open at a time, and the database enforces
+it with a partial unique index rather than the Worker checking first. That is
+what lets find-or-create be a single statement: two questions arriving in the
+same second would both find nothing and both insert, splitting a thread in
+half with no error to show for it. The conflict path doubles as the "another
+question in the same conversation" path, so the common case and the race
+resolve through the same branch.
+
+An interaction ends in one of three ways, recorded in `ended_reason`: the
+customer types `/start`, a moderator closes it, or it goes quiet for
+`CONVERSATION_IDLE_MINUTES` (default 60). The idle case is handled twice on
+purpose -- lazily when the next question arrives, which is what keeps
+threading correct, and in the cron sweep, which is what makes the recorded end
+timely. Without the sweep, the interactions that ended quietest would be
+exactly the ones with no `ended_at`.
+
+History travels in the user turn, never the cached system prefix. The prefix
+must stay byte-identical for the prompt cache to hit, and history differs on
+every request; a test asserts the separation, because moving it would quietly
+cost a full-corpus charge on every question. The prompt also restates the
+grounding rules alongside the history, since a rate the model quoted last turn
+must not become established fact this turn -- for a bank that is the failure
+that matters most.
+
+Only `final_answer` is replayed, never a draft. A draft nobody approved was
+never part of the conversation, and a rejected one may have been rejected
+precisely because it was wrong.
+
+**Retention is an open decision, not a default.** `conversations` and
+`tickets` hold customer questions and the answers sent back: personal data,
+and for a bank very likely regulated. Nothing in this repo deletes any of it.
+Deleting a conversation leaves its tickets behind (`ON DELETE SET NULL`) so a
+purge cannot silently take the audit trail with it, but the purge itself, and
+the period it enforces, are ARDB's call and still need making.
+
 **Drafting is pluggable, and optional.** `DRAFT_PROVIDER` picks between
 `workers-ai` (the default), `claude`, `github`, and `none`. The handler holds a
 draft function rather than a provider's configuration, so a third provider

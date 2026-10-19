@@ -67,6 +67,10 @@
     "CLAUDE_MODEL": "claude-haiku-5-5",
     "CLAUDE_EFFORT": "low",
     "RATE_LIMIT_PER_MINUTE": "3",
+    // Minutes of silence after which a customer's interaction is treated as
+    // over: the next question starts a new conversation instead of being
+    // drafted as a follow-up, and the old one gets an ended_at.
+    "CONVERSATION_IDLE_MINUTES": "60",
     "LOG_LEVEL": "info",
 
     // Minutes of silence before the moderator group is nudged, the minimum

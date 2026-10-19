@@ -7,6 +7,7 @@
  * byte of drift there costs the cache hit on every subsequent question.
  */
 
+import { renderHistory, type ConversationTurn } from "./conversations.js";
 import { renderKnowledge, type KnowledgeBase } from "./knowledge.js";
 import { languageLabel, type Language } from "./language.js";
 
@@ -48,6 +49,13 @@ export interface DraftRequest {
   question: string;
   questionLanguage: Language;
   knowledge: KnowledgeBase;
+  /**
+   * Earlier turns of the same conversation, oldest first.
+   *
+   * Optional, and absent for a first question. Travels in the user turn
+   * rather than the cached system prefix -- see `renderHistory`.
+   */
+  history?: readonly ConversationTurn[];
 }
 
 export interface SystemBlock {
@@ -95,8 +103,15 @@ export function buildSystemPrompt(knowledge: KnowledgeBase): string {
  * regex to judge Latin-script Khmer or a mixed sentence.
  */
 export function buildUserMessage(request: DraftRequest): string {
+  const history = renderHistory(request.history ?? []);
+
   return [
-    "A customer sent this question to the ARDB Telegram bot.",
+    // History first, so the newest question is the last thing read before the
+    // instruction to answer it.
+    ...(history ? [history, ""] : []),
+    history
+      ? "This is the customer's newest question."
+      : "A customer sent this question to the ARDB Telegram bot.",
     "",
     "<question>",
     request.question.trim(),

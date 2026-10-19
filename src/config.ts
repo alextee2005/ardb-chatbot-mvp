@@ -5,6 +5,7 @@
  * line at the edge, rather than as an undefined threaded three calls deep.
  */
 
+import { DEFAULT_IDLE_MINUTES } from "./core/conversations.js";
 import { DEFAULT_SLA_POLICY, type SlaPolicy } from "./core/sla.js";
 
 /** Who writes the suggested answer, if anyone. */
@@ -46,6 +47,7 @@ export interface Env {
   GITHUB_DISPATCH_EVENT?: string;
   RATE_LIMIT_PER_MINUTE?: string;
   LOG_LEVEL?: string;
+  CONVERSATION_IDLE_MINUTES?: string;
   SLA_NUDGE_AFTER_MINUTES?: string;
   SLA_NUDGE_REPEAT_MINUTES?: string;
   SLA_MAX_NUDGES?: string;
@@ -76,6 +78,8 @@ export interface Config {
   workersAiModel: string;
   githubDispatch: { token: string; repository: string; eventType: string } | null;
   rateLimitPerMinute: number;
+  /** Idle minutes after which a conversation is considered ended. */
+  conversationIdleMinutes: number;
   sla: SlaPolicy;
 }
 
@@ -189,6 +193,10 @@ export function loadConfig(env: Env): Config {
     githubDispatch,
     claudeEffort: effort as Config["claudeEffort"],
     rateLimitPerMinute: positiveInt(env.RATE_LIMIT_PER_MINUTE, 3),
+    conversationIdleMinutes: positiveInt(
+      env.CONVERSATION_IDLE_MINUTES,
+      DEFAULT_IDLE_MINUTES,
+    ),
     sla,
   };
 }

@@ -16,6 +16,7 @@ import {
 } from "../adapters/telegram.js";
 import { parseCallback } from "../core/callbacks.js";
 import { CUSTOMER_MESSAGES, MODERATOR_MESSAGES } from "../core/messages.js";
+import { MAX_HISTORY_TURNS } from "../core/conversations.js";
 import { renderCard, renderKeyboard } from "../core/moderator-card.js";
 import { canModeratorAct, hasSendableDraft, ticketRef, type Ticket } from "../core/tickets.js";
 
@@ -316,10 +317,24 @@ async function deliver(
 /** Rewrite the card in place so the group always shows current state. */
 async function refreshCard(ctx: ModeratorContext, ticket: Ticket): Promise<void> {
   if (ticket.cardMessageId === null) return;
+
+  // The thread is re-read on every refresh, not carried along. Omitting it
+  // would make the conversation banner vanish the moment a moderator claimed
+  // the ticket -- taking the context away at exactly the point they are
+  // writing the answer, which is when they need it most.
+  const turns =
+    ticket.conversationId !== null
+      ? await ctx.store.getConversationHistory(
+          ticket.conversationId,
+          ticket.id,
+          MAX_HISTORY_TURNS,
+        )
+      : [];
+
   await ctx.telegram.editMessageText({
     chatId: ctx.moderatorChatId,
     messageId: ticket.cardMessageId,
-    text: renderCard(ticket),
+    text: renderCard(ticket, { turns }),
     parseMode: "HTML",
     replyMarkup: renderKeyboard(ticket),
   });

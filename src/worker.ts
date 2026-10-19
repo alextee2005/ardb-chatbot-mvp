@@ -227,6 +227,7 @@ export default {
             store: new Store(config.databaseUrl),
             moderatorChatId: config.moderatorChatId,
             policy: config.sla,
+            conversationIdleMinutes: config.conversationIdleMinutes,
           });
 
           // Only worth a log line when the sweep actually did something; an
@@ -295,6 +296,7 @@ async function processUpdate(
       onTicket: selectOnTicket(config, telegram, store),
       moderatorChatId: config.moderatorChatId,
       rateLimitPerMinute: config.rateLimitPerMinute,
+      conversationIdleMinutes: config.conversationIdleMinutes,
     };
 
     const text = message.text?.trim();

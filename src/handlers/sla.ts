@@ -21,15 +21,22 @@ export interface SlaContext {
   store: Store;
   moderatorChatId: number;
   policy: SlaPolicy;
+  /** Idle minutes after which an interaction is recorded as ended. */
+  conversationIdleMinutes: number;
 }
 
 /** Bounds one sweep's work, so a backlog cannot blow the CPU limit. */
 const MAX_TICKETS_PER_SWEEP = 50;
 
+/** Same bound for conversations; a quiet night cannot queue unbounded work. */
+const MAX_CONVERSATIONS_PER_SWEEP = 100;
+
 export interface SweepSummary {
   examined: number;
   nudged: number;
   warned: number;
+  /** Interactions recorded as ended because the customer went quiet. */
+  conversationsClosed: number;
 }
 
 export async function runSlaSweep(
@@ -47,7 +54,12 @@ export async function runSlaSweep(
     MAX_TICKETS_PER_SWEEP,
   );
 
-  const summary: SweepSummary = { examined: candidates.length, nudged: 0, warned: 0 };
+  const summary: SweepSummary = {
+    examined: candidates.length,
+    nudged: 0,
+    warned: 0,
+    conversationsClosed: 0,
+  };
 
   for (const ticket of candidates) {
     const actions = decideSlaActions(ticket, now, ctx.policy);
@@ -97,6 +109,32 @@ export async function runSlaSweep(
         summary.warned += 1;
       }
     }
+  }
+
+  // Record the end of interactions the customer simply stopped replying to.
+  //
+  // The handler closes a stale conversation lazily when the next question
+  // arrives, which is what keeps threading correct. This is the other half:
+  // a customer who never comes back would otherwise leave a conversation open
+  // for ever and `ended_at` unwritten -- so the interactions that ended
+  // quietest would be exactly the ones with no recorded end.
+  //
+  // Last in the sweep, and deliberately not allowed to fail the rest: nudging
+  // a moderator about a waiting customer matters more than a timestamp.
+  try {
+    const closed = await ctx.store.closeIdleConversations(
+      ctx.conversationIdleMinutes,
+      MAX_CONVERSATIONS_PER_SWEEP,
+    );
+    summary.conversationsClosed = closed.length;
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        level: "error",
+        msg: "closing idle conversations failed",
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
   }
 
   return summary;

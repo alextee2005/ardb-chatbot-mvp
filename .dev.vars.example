@@ -58,6 +58,11 @@ GITHUB_DISPATCH_TOKEN=
 # postgresql://user:pass@ep-xxx.ap-southeast-1.aws.neon.tech/ardb?sslmode=require
 DATABASE_URL=
 
+# Optional. Minutes of silence after which a customer's interaction is treated
+# as over. The next question then starts a new conversation rather than being
+# drafted as a follow-up, and the finished one gets an ended_at. Default 60.
+# CONVERSATION_IDLE_MINUTES=60
+
 # Optional. SLA thresholds in minutes; the defaults in wrangler.jsonc apply
 # when these are absent or invalid.
 # SLA_NUDGE_AFTER_MINUTES=10

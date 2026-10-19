@@ -15,6 +15,7 @@
 import type { DraftResult } from "../adapters/claude.js";
 import type { TelegramClient } from "../adapters/telegram.js";
 import type { Store } from "../adapters/store.js";
+import { MAX_HISTORY_TURNS } from "../core/conversations.js";
 import type { DraftRequest } from "../core/draft.js";
 import type { KnowledgeBase } from "../core/knowledge.js";
 import { renderCard, renderKeyboard } from "../core/moderator-card.js";
@@ -43,11 +44,26 @@ export async function draftAndUpdateCard(
   ctx: DraftingContext,
   ticket: Ticket,
 ): Promise<void> {
+  // Earlier turns of the same conversation, so a follow-up is drafted as a
+  // follow-up. Loaded here rather than in each caller so every runtime that
+  // drafts -- the Worker inline, and the Actions job -- grounds a reply in the
+  // same history; one of them silently lacking it would be invisible from the
+  // card, which looks identical either way.
+  const history =
+    ctx.draft && ticket.conversationId !== null
+      ? await ctx.store.getConversationHistory(
+          ticket.conversationId,
+          ticket.id,
+          MAX_HISTORY_TURNS,
+        )
+      : [];
+
   const result: DraftResult = ctx.draft
     ? await ctx.draft({
         question: ticket.question,
         questionLanguage: ticket.questionLanguage,
         knowledge: ctx.knowledge,
+        history,
       })
     : {
         ok: false,
@@ -73,6 +89,8 @@ export async function draftAndUpdateCard(
         msg: "draft created",
         ticketId: ticket.id,
         knowledgeVersion: ctx.knowledge.version,
+        conversationId: ticket.conversationId,
+        historyTurns: history.length,
         cacheRead: result.cacheRead,
         cacheWrite: result.cacheWrite,
       }),
@@ -101,7 +119,9 @@ export async function draftAndUpdateCard(
   await ctx.telegram.editMessageText({
     chatId: ctx.moderatorChatId,
     messageId: updated.cardMessageId,
-    text: renderCard(updated),
+    // Same history the draft was grounded in, so the card a moderator reads
+    // and the reply they are approving were written from the same thread.
+    text: renderCard(updated, { turns: history }),
     parseMode: "HTML",
     replyMarkup: renderKeyboard(updated),
   });
