@@ -72,14 +72,90 @@ describe("draftWithWorkersAi", () => {
     const { binding, firstCall } = fakeBinding({ response: "ok" });
     await draftWithWorkersAi({ binding, model: "@cf/openai/gpt-oss-20b" }, request);
 
-    expect(firstCall().inputs.max_tokens).toBe(2000);
+    expect(firstCall().inputs.max_tokens).toBe(4000);
     expect(firstCall().model).toBe("@cf/openai/gpt-oss-20b");
+  });
+
+  describe("output shapes", () => {
+    // WORKERS_AI_MODEL is configuration, and model families answer in
+    // different shapes. Reading only `response` is what made gpt-oss report
+    // an empty draft on every question while answering perfectly well.
+    it("reads the chat-completions shape that gpt-oss returns", async () => {
+      const { binding } = fakeBinding({
+        choices: [{ message: { content: "  ១,៥០% ក្នុងមួយឆ្នាំ។  " }, finish_reason: "stop" }],
+      });
+      const result = await draftWithWorkersAi({ binding, model: "@cf/openai/gpt-oss-20b" }, request);
+      expect(result).toMatchObject({ ok: true, text: "១,៥០% ក្នុងមួយឆ្នាំ។" });
+    });
+
+    it("reads the responses shape's output_text", async () => {
+      const { binding } = fakeBinding({ output_text: "1.50% a year." });
+      const result = await draftWithWorkersAi({ binding, model: "@cf/openai/gpt-oss-20b" }, request);
+      expect(result).toMatchObject({ ok: true, text: "1.50% a year." });
+    });
+
+    it("takes text items from a responses output array and skips reasoning", async () => {
+      const { binding } = fakeBinding({
+        output: [
+          { content: [{ type: "reasoning", text: "the user asks about savings" }] },
+          { content: [{ type: "output_text", text: "1.50% a year." }] },
+        ],
+      });
+      const result = await draftWithWorkersAi({ binding, model: "@cf/openai/gpt-oss-20b" }, request);
+      expect(result).toMatchObject({ ok: true, text: "1.50% a year." });
+    });
+
+    it("prefers the plain text-generation field when a model sets it", async () => {
+      const { binding } = fakeBinding({ response: "from response", output_text: "from output" });
+      const result = await draftWithWorkersAi({ binding, model: "@cf/meta/llama-3.1-8b" }, request);
+      expect(result).toMatchObject({ ok: true, text: "from response" });
+    });
+  });
+
+  describe("reasoning models", () => {
+    it("turns reasoning effort down on models that cannot disable it", async () => {
+      // gpt-oss reasons on every request at "medium" by default, drawn from
+      // the same output budget as the answer.
+      const { binding, firstCall } = fakeBinding({ response: "ok" });
+      await draftWithWorkersAi({ binding, model: "@cf/openai/gpt-oss-20b" }, request);
+      expect(firstCall().inputs.reasoning_effort).toBe("low");
+    });
+
+    it("sends no reasoning_effort to a model that has no such parameter", async () => {
+      const { binding, firstCall } = fakeBinding({ response: "ok" });
+      await draftWithWorkersAi(
+        { binding, model: "@cf/meta/llama-3.1-8b-instruct-fp8-fast" },
+        request,
+      );
+      expect(firstCall().inputs.reasoning_effort).toBeUndefined();
+    });
+
+    it("says so when the budget went on reasoning rather than an answer", async () => {
+      // A different fix from an unread output shape: this one wants a bigger
+      // budget or a smaller model, and saying "empty draft" would send
+      // someone looking in the wrong place.
+      const { binding } = fakeBinding({
+        choices: [{ message: { content: "" }, finish_reason: "length" }],
+      });
+      const result = await draftWithWorkersAi({ binding, model: "@cf/openai/gpt-oss-20b" }, request);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).toContain("output budget");
+    });
   });
 
   it("treats an empty response as a failure rather than an empty answer", async () => {
     const { binding } = fakeBinding({ response: "   " });
     const result = await draftWithWorkersAi({ binding, model: "m" }, request);
     expect(result.ok).toBe(false);
+  });
+
+  it("names the keys it did get when no shape yields text", async () => {
+    // The diagnostic that would have found the gpt-oss bug in one reading
+    // rather than in a debugging session.
+    const { binding } = fakeBinding({ id: "x", object: "chat.completion" });
+    const result = await draftWithWorkersAi({ binding, model: "m" }, request);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("id, object");
   });
 
   it("explains the daily neuron limit and when it resets", async () => {

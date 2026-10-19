@@ -26,12 +26,71 @@ export interface WorkersAiConfig {
 }
 
 /**
- * Generous enough for a full reply in Khmer, which tokenizes considerably
- * worse than English -- the same answer can be two or three times the tokens.
- * Nowhere near the models' output ceilings, but a draft longer than this is a
- * sign the prompt has gone wrong rather than a reply worth sending.
+ * Room for a full reply in Khmer, which tokenizes considerably worse than
+ * English, *plus* reasoning tokens.
+ *
+ * The second part is what makes 2000 too small. On a reasoning model the
+ * hidden reasoning is drawn from this same budget, so a value sized for the
+ * answer alone can be spent entirely on thinking -- the model stops with
+ * finish_reason "length" having produced no visible text at all, which
+ * reaches the moderator as a draft that is simply missing.
  */
-const MAX_TOKENS = 2000;
+const MAX_TOKENS = 4000;
+
+/**
+ * Models whose reasoning cannot be switched off, only turned down.
+ *
+ * gpt-oss reasons on every request and defaults to "medium" effort. Left
+ * alone on a ~20,000-token prompt it can think its way through the whole
+ * output budget before writing a word of the answer.
+ */
+const REASONING_MODELS = /gpt-oss/;
+
+/**
+ * The three output shapes Workers AI returns, because WORKERS_AI_MODEL is
+ * configuration and different model families answer differently:
+ *
+ * - `response`: the plain text-generation shape (Llama, Mistral, Qwen)
+ * - `choices[]`: OpenAI chat completions (gpt-oss)
+ * - `output_text` / `output[]`: OpenAI responses (gpt-oss, the other half of
+ *   its input union)
+ *
+ * Reading only `response` is what made gpt-oss report an empty draft on every
+ * question: it never sets that field, so a perfectly good answer sitting in
+ * `choices[0].message.content` was discarded.
+ */
+interface WorkersAiResponse {
+  response?: string;
+  output_text?: string;
+  output?: { content?: { text?: string; type?: string }[] }[];
+  choices?: {
+    message?: { content?: string | null };
+    finish_reason?: string;
+  }[];
+  usage?: { prompt_tokens?: number; completion_tokens?: number };
+}
+
+/** The reply text, from whichever shape this model used. */
+function extractText(response: WorkersAiResponse): string {
+  const candidates = [
+    response.response,
+    response.choices?.[0]?.message?.content ?? undefined,
+    response.output_text,
+    // The responses shape nests content items, and a reasoning model puts its
+    // reasoning in there too -- so take text items only, in order.
+    response.output
+      ?.flatMap((item) => item.content ?? [])
+      .filter((part) => part.type === undefined || part.type.includes("text"))
+      .map((part) => part.text ?? "")
+      .join(""),
+  ];
+
+  for (const candidate of candidates) {
+    const text = candidate?.trim();
+    if (text) return text;
+  }
+  return "";
+}
 
 export async function draftWithWorkersAi(
   config: WorkersAiConfig,
@@ -42,17 +101,43 @@ export async function draftWithWorkersAi(
     // against the generated union of model names. The cast is confined to this
     // one line; an unknown name fails at runtime with Cloudflare's own error,
     // which `describeError` passes through to the moderator's card.
-    const response = (await config.binding.run(config.model as keyof AiModels, {
+    const inputs: Record<string, unknown> = {
       messages: [
         { role: "system", content: buildSystemPrompt(request.knowledge) },
         { role: "user", content: buildUserMessage(request) },
       ],
       max_tokens: MAX_TOKENS,
-    } as never)) as { response?: string; usage?: { prompt_tokens: number; completion_tokens: number } };
+    };
+    if (REASONING_MODELS.test(config.model)) {
+      inputs.reasoning_effort = "low";
+    }
 
-    const text = response.response?.trim();
+    const response = (await config.binding.run(
+      config.model as keyof AiModels,
+      inputs as never,
+    )) as WorkersAiResponse;
+
+    const text = extractText(response);
     if (!text) {
-      return { ok: false, error: "Workers AI returned an empty draft." };
+      // Distinguish the two reasons a reply can be missing, because they need
+      // different fixes: a budget spent on reasoning wants a larger
+      // max_tokens or lower effort, while anything else is a model whose
+      // output shape this adapter does not yet read.
+      if (response.choices?.[0]?.finish_reason === "length") {
+        return {
+          ok: false,
+          error:
+            "The model used its whole output budget before writing an answer " +
+            "-- on a reasoning model, thinking is drawn from the same budget. " +
+            "Raise MAX_TOKENS or set a smaller WORKERS_AI_MODEL.",
+        };
+      }
+      return {
+        ok: false,
+        error:
+          "Workers AI returned no text in any shape this adapter reads " +
+          `(keys: ${Object.keys(response).join(", ") || "none"}).`,
+      };
     }
 
     // Reported as cacheRead/cacheWrite 0 because Workers AI has no prompt
