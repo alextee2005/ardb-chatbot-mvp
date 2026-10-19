@@ -30,7 +30,10 @@ export interface CallbackQuery {
   id: string;
   data?: string;
   from: { id: number; first_name: string; last_name?: string; username?: string };
-  message?: { message_id: number; chat: { id: number } };
+  // `type` is how a customer's private chat is told apart from the moderator
+  // group when routing a tap. Optional because the Bot API marks it so, and
+  // the routing treats an absent type as "not private" rather than guessing.
+  message?: { message_id: number; chat: { id: number; type?: string } };
 }
 
 export async function handleCallback(

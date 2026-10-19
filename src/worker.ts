@@ -36,6 +36,8 @@ import {
   type ModeratorContext,
 } from "./handlers/moderator.js";
 import { draftAndUpdateCard } from "./handlers/drafting.js";
+import { handleCustomerCallback } from "./handlers/customer-callbacks.js";
+import { runEngagementSweep } from "./handlers/engagement.js";
 import { runSlaSweep } from "./handlers/sla.js";
 import type { TelegramMessage } from "./adapters/telegram.js";
 
@@ -132,6 +134,17 @@ interface TelegramUpdate {
 
 const WEBHOOK_PATH = "/telegram/webhook";
 
+/**
+ * The cron expressions from wrangler.jsonc, as literals.
+ *
+ * Matched exactly against `event.cron`, so these must stay character-for-
+ * character identical to the strings in `triggers.crons`. Anything
+ * unrecognized falls through to the engagement sweep rather than being
+ * silently dropped.
+ */
+const SLA_CRON = "*/5 * * * *";
+const WEEKLY_ARCHIVE_CRON = "17 3 * * 0";
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -198,13 +211,23 @@ export default {
   },
 
   /**
-   * Cron Trigger: chase tickets nobody has answered.
+   * Cron Triggers: three schedules, dispatched on which one fired.
+   *
+   *   every minute   follow-ups and surveys. The follow-up is due three
+   *                  minutes after an answer, so a five-minute sweep would
+   *                  deliver it somewhere between three and eight -- and a
+   *                  question that arrives late reads as though the bot was
+   *                  not paying attention.
+   *   every 5 min    the SLA sweep. Unchanged, and deliberately not moved to
+   *                  the minute schedule: it is the expensive one, and its
+   *                  thresholds start at ten minutes.
+   *   Sunday 03:17   the weekly archive.
    *
    * Errors are caught rather than thrown. A failed sweep must not retry in a
-   * tight loop, and the next scheduled run will pick up the same tickets
-   * anyway -- the nudge guards in SQL make a repeat harmless.
+   * tight loop, and the next run picks up the same work anyway -- every step
+   * claims in SQL, so a repeat is harmless.
    */
-  async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+  async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     let config;
     try {
       config = loadConfig(env);
@@ -212,38 +235,89 @@ export default {
       console.error(
         JSON.stringify({
           level: "error",
-          msg: "SLA sweep skipped: configuration error",
+          msg: "scheduled run skipped: configuration error",
+          cron: event.cron,
           detail: error instanceof ConfigError ? error.message : String(error),
         }),
       );
       return;
     }
 
+    const telegram = new TelegramClient(config.telegramToken);
+    const store = new Store(config.databaseUrl);
+
+    /** Run one sweep, logging rather than throwing. */
+    const guard = async (name: string, run: () => Promise<void>): Promise<void> => {
+      try {
+        await run();
+      } catch (error) {
+        console.error(
+          JSON.stringify({
+            level: "error",
+            msg: `${name} failed`,
+            cron: event.cron,
+            detail: error instanceof Error ? error.message : String(error),
+          }),
+        );
+      }
+    };
+
     ctx.waitUntil(
       (async () => {
-        try {
-          const summary = await runSlaSweep({
-            telegram: new TelegramClient(config.telegramToken),
-            store: new Store(config.databaseUrl),
-            moderatorChatId: config.moderatorChatId,
-            policy: config.sla,
-            conversationIdleMinutes: config.conversationIdleMinutes,
+        if (event.cron === WEEKLY_ARCHIVE_CRON) {
+          await guard("weekly archive", async () => {
+            const summary = await store.archiveClosedConversations(
+              config.archiveAfterDays,
+              config.archiveBatchSize,
+            );
+            // Always logged, including a run that moved nothing: this one runs
+            // weekly, so "it did nothing" and "it never ran" need telling
+            // apart, and there is no next run for days.
+            console.log(
+              JSON.stringify({
+                level: "info",
+                msg: "weekly archive",
+                olderThanDays: config.archiveAfterDays,
+                ...summary,
+              }),
+            );
           });
-
-          // Only worth a log line when the sweep actually did something; an
-          // idle queue sweeping every five minutes would drown the logs.
-          if (summary.nudged > 0 || summary.warned > 0) {
-            console.log(JSON.stringify({ level: "info", msg: "SLA sweep", ...summary }));
-          }
-        } catch (error) {
-          console.error(
-            JSON.stringify({
-              level: "error",
-              msg: "SLA sweep failed",
-              detail: error instanceof Error ? error.message : String(error),
-            }),
-          );
+          return;
         }
+
+        if (event.cron === SLA_CRON) {
+          await guard("SLA sweep", async () => {
+            const summary = await runSlaSweep({
+              telegram,
+              store,
+              moderatorChatId: config.moderatorChatId,
+              policy: config.sla,
+              conversationIdleMinutes: config.conversationIdleMinutes,
+            });
+            // Only worth a log line when the sweep did something; an idle
+            // queue sweeping every five minutes would drown the logs.
+            if (summary.nudged > 0 || summary.warned > 0 || summary.conversationsClosed > 0) {
+              console.log(JSON.stringify({ level: "info", msg: "SLA sweep", ...summary }));
+            }
+          });
+          return;
+        }
+
+        // The minute schedule, and the fallback for any cron expression this
+        // code does not recognize -- a schedule added in wrangler.jsonc and
+        // not here should still do the cheap, frequent work rather than
+        // nothing at all.
+        await guard("engagement sweep", async () => {
+          const summary = await runEngagementSweep({
+            telegram,
+            store,
+            followupMinutes: config.followupMinutes,
+            idleMinutes: config.conversationIdleMinutes,
+          });
+          if (summary.followupsAsked > 0 || summary.surveysSent > 0) {
+            console.log(JSON.stringify({ level: "info", msg: "engagement sweep", ...summary }));
+          }
+        });
       })(),
     );
   },
@@ -262,15 +336,30 @@ async function processUpdate(
     if (!fresh) return; // A Telegram retry of something already handled.
 
     if (update.callback_query) {
-      // Only taps on cards in the moderator group count. A card cannot be seen
-      // outside that group, so this is also the authorization check.
-      if (update.callback_query.message?.chat.id !== config.moderatorChatId) return;
-      const moderatorCtx: ModeratorContext = {
-        telegram,
-        store,
-        moderatorChatId: config.moderatorChatId,
-      };
-      await handleCallback(moderatorCtx, update.callback_query);
+      const chatId = update.callback_query.message?.chat.id;
+
+      // Which keyboard was tapped is decided by which chat it was in, and the
+      // two are handled by different code with different parsers. The
+      // moderator group's cards carry ticket actions; a customer's private
+      // chat carries the follow-up and the survey. Routing on the chat means a
+      // customer payload can never reach the moderator handler.
+      if (chatId === config.moderatorChatId) {
+        const moderatorCtx: ModeratorContext = {
+          telegram,
+          store,
+          moderatorChatId: config.moderatorChatId,
+        };
+        await handleCallback(moderatorCtx, update.callback_query);
+        return;
+      }
+
+      // A private chat is a customer. The handler re-checks that the
+      // conversation in the payload really belongs to this chat, because
+      // unlike a moderator card the id travels in callback data the client
+      // could edit.
+      if (update.callback_query.message?.chat.type === "private") {
+        await handleCustomerCallback({ telegram, store }, update.callback_query);
+      }
       return;
     }
 

@@ -62,6 +62,16 @@ function toConversation(row: Row): Conversation {
     startedAt: new Date(String(row.started_at)),
     lastActivityAt: new Date(String(row.last_activity_at)),
     endedAt: row.ended_at ? new Date(String(row.ended_at)) : null,
+    followupSentAt: row.followup_sent_at ? new Date(String(row.followup_sent_at)) : null,
+    followupMessageId:
+      row.followup_message_id === null || row.followup_message_id === undefined
+        ? null
+        : Number(row.followup_message_id),
+    surveySentAt: row.survey_sent_at ? new Date(String(row.survey_sent_at)) : null,
+    surveyMessageId:
+      row.survey_message_id === null || row.survey_message_id === undefined
+        ? null
+        : Number(row.survey_message_id),
   };
 }
 
@@ -209,6 +219,168 @@ export class Store {
       RETURNING *
     `;
     return rows.map((row) => toConversation(row as Row));
+  }
+
+  /**
+   * Conversations due the "is there anything else?" question.
+   *
+   * The NOT EXISTS is the important half: a conversation with a question still
+   * in the queue is excluded, because asking whether anything else is needed
+   * while the customer is waiting for an answer reads as though the bot has
+   * forgotten them. At a three-minute threshold an unanswered ticket is the
+   * normal case, not an edge one.
+   */
+  async findConversationsDueFollowup(
+    followupMinutes: number,
+    limit: number,
+  ): Promise<Conversation[]> {
+    const rows = await this.sql`
+      SELECT c.* FROM conversations c
+      WHERE c.status = 'open'
+        AND c.followup_sent_at IS NULL
+        AND c.question_count > 0
+        AND c.last_activity_at < now() - make_interval(mins => ${followupMinutes})
+        AND NOT EXISTS (
+          SELECT 1 FROM tickets t
+          WHERE t.conversation_id = c.id
+            AND t.status NOT IN ('sent','rejected')
+        )
+      ORDER BY c.last_activity_at
+      LIMIT ${limit}
+    `;
+    return rows.map((row) => toConversation(row as Row));
+  }
+
+  /**
+   * Claim the follow-up for a conversation before sending it.
+   *
+   * Returns false when another sweep got there first, so a conversation can
+   * never be asked twice. Claim-then-send, not send-then-record: a duplicate
+   * question to a customer is visible and annoying, whereas a claim that is
+   * followed by a failed send just means the conversation times out instead,
+   * which is the behaviour it had before this feature existed.
+   */
+  async claimFollowup(conversationId: number): Promise<boolean> {
+    const rows = await this.sql`
+      UPDATE conversations
+      SET followup_sent_at = now()
+      WHERE id = ${conversationId}
+        AND status = 'open'
+        AND followup_sent_at IS NULL
+      RETURNING id
+    `;
+    return rows.length > 0;
+  }
+
+  async setFollowupMessageId(conversationId: number, messageId: number): Promise<void> {
+    await this.sql`
+      UPDATE conversations SET followup_message_id = ${messageId} WHERE id = ${conversationId}
+    `;
+  }
+
+  /** The conversation behind a customer's button tap, whatever its status. */
+  async getConversation(id: number): Promise<Conversation | null> {
+    const rows = await this.sql`SELECT * FROM conversations WHERE id = ${id}`;
+    return rows.length > 0 ? toConversation(rows[0] as Row) : null;
+  }
+
+  /**
+   * Clear the follow-up so the customer is asked again after the next answer.
+   *
+   * Called when a new question arrives and when the customer taps Yes. Also
+   * bumps last_activity_at: the customer has just interacted, so the idle
+   * clock restarts from here.
+   */
+  async reopenForMoreQuestions(conversationId: number): Promise<Conversation | null> {
+    const rows = await this.sql`
+      UPDATE conversations
+      SET followup_sent_at = NULL,
+          followup_message_id = NULL,
+          last_activity_at = now()
+      WHERE id = ${conversationId} AND status = 'open'
+      RETURNING *
+    `;
+    return rows.length > 0 ? toConversation(rows[0] as Row) : null;
+  }
+
+  /** End one conversation by id, rather than by chat. */
+  async closeConversationById(
+    conversationId: number,
+    reason: ConversationEndReason,
+  ): Promise<Conversation | null> {
+    const rows = await this.sql`
+      UPDATE conversations
+      SET status = 'closed', ended_at = now(), ended_reason = ${reason}
+      WHERE id = ${conversationId} AND status = 'open'
+      RETURNING *
+    `;
+    return rows.length > 0 ? toConversation(rows[0] as Row) : null;
+  }
+
+  // ---------------------------------------------------------------------
+  // Satisfaction survey
+  // ---------------------------------------------------------------------
+
+  /** Closed conversations that have ended but not yet been surveyed. */
+  async findConversationsDueSurvey(limit: number): Promise<Conversation[]> {
+    const rows = await this.sql`
+      SELECT * FROM conversations
+      WHERE status = 'closed'
+        AND survey_sent_at IS NULL
+        AND question_count > 0
+      ORDER BY ended_at
+      LIMIT ${limit}
+    `;
+    return rows.map((row) => toConversation(row as Row));
+  }
+
+  /** Claim the survey before sending it, so it cannot be sent twice. */
+  async claimSurvey(conversationId: number): Promise<boolean> {
+    const rows = await this.sql`
+      UPDATE conversations
+      SET survey_sent_at = now()
+      WHERE id = ${conversationId} AND survey_sent_at IS NULL
+      RETURNING id
+    `;
+    return rows.length > 0;
+  }
+
+  async setSurveyMessageId(conversationId: number, messageId: number): Promise<void> {
+    await this.sql`
+      UPDATE conversations SET survey_message_id = ${messageId} WHERE id = ${conversationId}
+    `;
+  }
+
+  /**
+   * Store a satisfaction score.
+   *
+   * The conversation's own facts are copied in rather than referenced, so the
+   * result stays interpretable after the weekly archive has removed the
+   * conversation row -- "4 out of 5, after 3 questions, on an interaction the
+   * customer ended themselves" reads the same in a year.
+   *
+   * Returns false when a score already exists: a customer tapping twice is
+   * expressing one opinion, and a second row would quietly double-count them.
+   */
+  async recordSurveyResponse(input: {
+    conversationId: number;
+    customerChatId: number;
+    customerUserId: number;
+    score: number;
+  }): Promise<boolean> {
+    const rows = await this.sql`
+      INSERT INTO conversation_surveys (
+        conversation_id, customer_chat_id, customer_user_id, score,
+        question_count, ended_reason, conversation_started_at
+      )
+      SELECT ${input.conversationId}, ${input.customerChatId}, ${input.customerUserId},
+             ${input.score}, c.question_count, c.ended_reason, c.started_at
+      FROM conversations c WHERE c.id = ${input.conversationId}
+      ON CONFLICT (conversation_id) WHERE conversation_id IS NOT NULL
+      DO NOTHING
+      RETURNING id
+    `;
+    return rows.length > 0;
   }
 
   /**
@@ -457,6 +629,112 @@ export class Store {
       RETURNING id
     `;
     return rows.length > 0;
+  }
+
+  // ---------------------------------------------------------------------
+  // Weekly archive
+  // ---------------------------------------------------------------------
+
+  /**
+   * Move closed conversations older than `olderThanDays` into the history
+   * tables.
+   *
+   * Copy first, then delete only what is provably copied. The HTTP driver has
+   * no transaction spanning statements, so the two halves can be interrupted
+   * between -- and the asymmetry of the failure modes decides the order:
+   *
+   *   copy fails            → nothing deleted, next run retries. No loss.
+   *   copy ok, delete fails → rows in both places. The next run's copy is a
+   *                           no-op (ON CONFLICT DO NOTHING) and the delete
+   *                           retries. No loss.
+   *
+   * Deleting first, or deleting without the `IN (history)` guard, would make
+   * a mid-run interruption destroy customer records with nothing to restore
+   * from. For a bank that is the one outcome worth contorting the code to
+   * make impossible.
+   *
+   * Events before tickets and tickets before conversations, because that is
+   * the order the foreign keys allow: ticket_events cascades from tickets, so
+   * events must be copied while their tickets still exist.
+   *
+   * Batched, so one weekly run on a long backlog cannot exceed the CPU limit.
+   */
+  async archiveClosedConversations(
+    olderThanDays: number,
+    limit: number,
+  ): Promise<{ conversations: number; tickets: number; events: number }> {
+    // The batch is chosen once and reused by every statement below. Letting
+    // each statement re-evaluate "closed and old enough" would let a
+    // conversation closed between two of them be half-archived.
+    const chosen = await this.sql`
+      SELECT id FROM conversations
+      WHERE status = 'closed'
+        AND ended_at IS NOT NULL
+        AND ended_at < now() - make_interval(days => ${olderThanDays})
+      ORDER BY ended_at
+      LIMIT ${limit}
+    `;
+    const ids = chosen.map((row) => Number((row as Row).id));
+    if (ids.length === 0) return { conversations: 0, tickets: 0, events: 0 };
+
+    // Every `ANY(...)` below casts to bigint[] explicitly. Postgres can
+    // sometimes infer an array parameter's type and sometimes cannot,
+    // depending on how the driver declares it, and the failure would be a
+    // runtime error in a weekly job -- the kind nobody sees until the live
+    // tables have grown for a month. The cast costs nothing and removes the
+    // question.
+
+    // --- copy ---
+
+    const events = await this.sql`
+      INSERT INTO ticket_events_history
+      SELECT e.*, now() FROM ticket_events e
+      JOIN tickets t ON t.id = e.ticket_id
+      WHERE t.conversation_id = ANY(${ids}::bigint[])
+      ON CONFLICT (id) DO NOTHING
+      RETURNING id
+    `;
+
+    const tickets = await this.sql`
+      INSERT INTO tickets_history
+      SELECT t.*, now() FROM tickets t
+      WHERE t.conversation_id = ANY(${ids}::bigint[])
+      ON CONFLICT (id) DO NOTHING
+      RETURNING id
+    `;
+
+    const conversations = await this.sql`
+      INSERT INTO conversations_history
+      SELECT c.*, now() FROM conversations c
+      WHERE c.id = ANY(${ids}::bigint[])
+      ON CONFLICT (id) DO NOTHING
+      RETURNING id
+    `;
+
+    // --- delete, guarded ---
+    //
+    // Every DELETE requires the row to exist in history. This is what makes
+    // the operation safe to interrupt at any point: a row that was not copied
+    // cannot be removed, whatever went wrong above.
+
+    await this.sql`
+      DELETE FROM tickets t
+      WHERE t.conversation_id = ANY(${ids}::bigint[])
+        AND EXISTS (SELECT 1 FROM tickets_history h WHERE h.id = t.id)
+    `;
+
+    await this.sql`
+      DELETE FROM conversations c
+      WHERE c.id = ANY(${ids}::bigint[])
+        AND EXISTS (SELECT 1 FROM conversations_history h WHERE h.id = c.id)
+        AND NOT EXISTS (SELECT 1 FROM tickets t WHERE t.conversation_id = c.id)
+    `;
+
+    return {
+      conversations: conversations.length,
+      tickets: tickets.length,
+      events: events.length,
+    };
   }
 
   async recordEvent(input: {

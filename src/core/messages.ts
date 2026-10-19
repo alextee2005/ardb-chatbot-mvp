@@ -51,6 +51,58 @@ export const CUSTOMER_MESSAGES = {
     "Sorry, your question is taking longer than usual. Our staff will reply to you as soon as they can. If it is urgent, please contact your nearest ARDB branch.",
   ),
 
+  /**
+   * Asked a few minutes after an answer, with Yes/No buttons.
+   *
+   * This is how an interaction ends: by asking, rather than by assuming the
+   * customer has gone. Phrased so that "no" is a perfectly good answer and
+   * not a dismissal -- a customer who is finished should feel finished, not
+   * hurried off.
+   */
+  followUp: bilingual(
+    "តើមានអ្វីផ្សេងទៀតដែលយើងអាចជួយអ្នកបានទេ?",
+    "Is there anything else that we can help you with?",
+  ),
+
+  /** Button labels for the follow-up. */
+  followUpYesButton: "បាទ/ចាស មាន · Yes",
+  followUpNoButton: "អត់ទេ អរគុណ · No",
+
+  /** Tapped Yes: invite the next question. */
+  followUpYes: bilingual(
+    "ល្អហើយ! សូមសរសេរសំណួរបន្ទាប់របស់អ្នកមកបាន។",
+    "Of course — please type your next question.",
+  ),
+
+  /** Tapped No: acknowledge the end of the interaction. */
+  followUpNo: bilingual(
+    "អរគុណសម្រាប់ការទាក់ទងមក ARDB។ សូមសួរមកវិញបានគ្រប់ពេល។",
+    "Thank you for contacting ARDB. You are welcome to write to us again any time.",
+  ),
+
+  /**
+   * The satisfaction survey, sent once an interaction has ended.
+   *
+   * One tap, five options, no free text: a customer on a phone in a rice
+   * field will answer a tap and will not answer an essay.
+   */
+  survey: bilingual(
+    "សូមជួយវាយតម្លៃសេវាកម្មរបស់យើងថ្ងៃនេះ ដោយចុចលេខមួយខាងក្រោម (១ = មិនពេញចិត្ត, ៥ = ពេញចិត្តខ្លាំង)។",
+    "Please rate our service today by tapping a number below (1 = not satisfied, 5 = very satisfied).",
+  ),
+
+  /** After a score is recorded. */
+  surveyThanks: bilingual(
+    "អរគុណសម្រាប់មតិរបស់អ្នក។ វាជួយយើងធ្វើឱ្យសេវាកម្មកាន់តែប្រសើរ។",
+    "Thank you for your feedback. It helps us improve our service.",
+  ),
+
+  /** A button tapped on a message that no longer applies. */
+  staleButton: bilingual(
+    "ការជជែកនេះបានបញ្ចប់ហើយ។ សូមសរសេរសំណួរថ្មីមកបាន។",
+    "That conversation has already ended. Please just type a new question.",
+  ),
+
   /** The moderator declined to answer through the bot. */
   rejected: bilingual(
     "សុំទោស សំណួរនេះត្រូវការជំនួយពីបុគ្គលិករបស់យើងដោយផ្ទាល់។ សូមទាក់ទងសាខា ARDB ជិតបំផុត ឬទូរស័ព្ទមកយើង។",

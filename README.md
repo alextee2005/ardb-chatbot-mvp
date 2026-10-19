@@ -250,13 +250,84 @@ half with no error to show for it. The conflict path doubles as the "another
 question in the same conversation" path, so the common case and the race
 resolve through the same branch.
 
-An interaction ends in one of three ways, recorded in `ended_reason`: the
-customer types `/start`, a moderator closes it, or it goes quiet for
-`CONVERSATION_IDLE_MINUTES` (default 60). The idle case is handled twice on
-purpose -- lazily when the next question arrives, which is what keeps
-threading correct, and in the cron sweep, which is what makes the recorded end
-timely. Without the sweep, the interactions that ended quietest would be
-exactly the ones with no `ended_at`.
+**An interaction ends by asking, not by guessing.** Three minutes after an
+answer is delivered (`FOLLOWUP_MINUTES`) the bot asks "is there anything else
+that we can help you with?" with two buttons. **No** closes the conversation
+as `completed` -- the only ending the customer actually confirms. **Yes**
+clears the follow-up and invites the next question, and once that one is
+answered the question comes round again, so the follow-up is per answer rather
+than per conversation. Typing a new question instead of tapping does the same
+thing and strips the now-meaningless buttons.
+
+The guard that matters is that the follow-up is never sent while a question is
+still in the queue. At a three-minute threshold an unanswered ticket is the
+normal case, not an edge one, and "anything else?" arriving while the customer
+is still waiting reads as though the bot forgot them.
+
+`/start` no longer ends a conversation. It did, and that was wrong: it
+discarded the thread of anyone who tapped the menu button mid-conversation and
+then asked a follow-up. An open conversation now survives a `/start` and the
+greeting is just a greeting.
+
+So `ended_reason` is one of `completed` (the customer said no), `idle` (quiet
+for `CONVERSATION_IDLE_MINUTES`, default 60), `moderator`, or `restarted`
+(retained for rows written before this change). The idle case is handled in
+more than one place on purpose -- lazily when the next question arrives, which
+is what keeps threading correct, and in the sweeps, which is what makes the
+recorded end timely. Without that, the interactions that ended quietest would
+be exactly the ones with no `ended_at`.
+
+**Every ended interaction is surveyed.** Closing a conversation is what makes
+it due a survey, and a sweep sends it: one path, so an interaction the customer
+ended themselves and one that timed out are surveyed by identical code. The
+survey is five buttons, 1 to 5, no free text -- a customer on a phone will
+answer a tap and will not answer an essay.
+
+Results go in `conversation_surveys`, which **snapshots** the question count,
+the end reason and the start time rather than only referencing the
+conversation. That is what lets a result stay interpretable after the weekly
+archive has removed the conversation it rates: "4 out of 5, after 3 questions,
+on an interaction the customer ended themselves" reads the same in a year. One
+rating per conversation, enforced by a partial unique index, because a customer
+tapping twice is expressing one opinion and two rows would quietly
+double-count them in any average.
+
+**Customer taps are authorized differently from moderator taps.** A moderator
+card lives in one private group, so being able to see it is proof enough. A
+customer's buttons live in their own chat and the conversation id travels in
+callback data the client could edit, so every customer handler confirms the
+conversation actually belongs to the chat the tap came from -- otherwise a
+hand-edited payload would let one customer end another's conversation or file a
+satisfaction score against it. The two namespaces have separate parsers that
+each reject the other's payloads, and a test asserts that.
+
+**Three cron schedules**, dispatched on `event.cron`: every minute for
+follow-ups and surveys, `*/5` for the SLA sweep, and Sunday 03:17 UTC for the
+archive. The minute schedule exists because the follow-up is due at three
+minutes and a five-minute sweep would deliver it somewhere between three and
+eight. The expressions are string literals in `worker.ts` matched against
+`event.cron`, and nothing in the type system ties them to `wrangler.jsonc` --
+so a test reads both files and asserts they agree. Edit one without the other
+and the weekly archive silently becomes an every-minute sweep.
+
+**The weekly archive copies before it deletes, and deletes only what it can
+prove it copied.** Closed conversations older than `ARCHIVE_AFTER_DAYS`
+(default 7) move to `conversations_history`, `tickets_history` and
+`ticket_events_history`, in that dependency order. The HTTP driver has no
+transaction spanning statements, so the ordering is chosen for its failure
+modes: if the copy fails nothing is deleted; if the copy succeeds and the
+delete is interrupted, rows sit in both places and the next run's copy is a
+no-op while the delete retries. Neither loses a record. Every `DELETE` carries
+an `EXISTS (SELECT 1 FROM ..._history ...)` guard, so an interruption at any
+point cannot destroy a customer record with nothing to restore from -- for a
+bank that is worth contorting the code to make impossible. Both failure modes
+are verified against a real PostgreSQL, not reasoned about.
+
+The history tables are created with `LIKE ... EXCLUDING ALL`: same columns, no
+foreign keys, no checks, no cascades. An archive exists to be readable years
+later, and a constraint added to a live table in 2027 must not be able to
+reject a row written in 2026. An open conversation is never archived whatever
+its age, and survey results are never archived at all.
 
 History travels in the user turn, never the cached system prefix. The prefix
 must stay byte-identical for the prompt cache to hit, and history differs on
@@ -270,12 +341,16 @@ Only `final_answer` is replayed, never a draft. A draft nobody approved was
 never part of the conversation, and a rejected one may have been rejected
 precisely because it was wrong.
 
-**Retention is an open decision, not a default.** `conversations` and
-`tickets` hold customer questions and the answers sent back: personal data,
-and for a bank very likely regulated. Nothing in this repo deletes any of it.
-Deleting a conversation leaves its tickets behind (`ON DELETE SET NULL`) so a
-purge cannot silently take the audit trail with it, but the purge itself, and
-the period it enforces, are ARDB's call and still need making.
+**Retention now has a mechanism, but the period is still ARDB's call.** The
+weekly archive moves closed conversations out of the live tables after
+`ARCHIVE_AFTER_DAYS`, which keeps the queue small -- but it is an archive, not
+a deletion: the questions and answers are still in Postgres, in the history
+tables, indefinitely. That is deliberate, because destroying a bank's customer
+correspondence on a default nobody chose would be worse than keeping it. What
+is still missing is the decision about how long the history itself may be kept
+and what happens at the end of it, which is a compliance question rather than
+an engineering one. Deleting from the history tables is a one-line change once
+that period is set.
 
 **Drafting is pluggable, and optional.** `DRAFT_PROVIDER` picks between
 `workers-ai` (the default), `claude`, `github`, and `none`. The handler holds a

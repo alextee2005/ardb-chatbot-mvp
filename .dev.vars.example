@@ -63,6 +63,18 @@ DATABASE_URL=
 # drafted as a follow-up, and the finished one gets an ended_at. Default 60.
 # CONVERSATION_IDLE_MINUTES=60
 
+# Optional. Minutes after the last answer before the bot asks whether anything
+# else is needed. Default 3. The follow-up is never sent while a question is
+# still unanswered, whatever this is set to.
+# FOLLOWUP_MINUTES=3
+
+# Optional. How long a closed conversation stays in the live tables before the
+# weekly archive moves it into the history tables, and how many are moved per
+# run. Defaults 7 and 200. The archive copies before it deletes and deletes
+# only what it can prove it copied, so neither value can cause data loss.
+# ARCHIVE_AFTER_DAYS=7
+# ARCHIVE_BATCH_SIZE=200
+
 # Optional. SLA thresholds in minutes; the defaults in wrangler.jsonc apply
 # when these are absent or invalid.
 # SLA_NUDGE_AFTER_MINUTES=10

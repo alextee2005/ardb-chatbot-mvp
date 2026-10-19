@@ -5,7 +5,7 @@
  * line at the edge, rather than as an undefined threaded three calls deep.
  */
 
-import { DEFAULT_IDLE_MINUTES } from "./core/conversations.js";
+import { DEFAULT_FOLLOWUP_MINUTES, DEFAULT_IDLE_MINUTES } from "./core/conversations.js";
 import { DEFAULT_SLA_POLICY, type SlaPolicy } from "./core/sla.js";
 
 /** Who writes the suggested answer, if anyone. */
@@ -48,6 +48,9 @@ export interface Env {
   RATE_LIMIT_PER_MINUTE?: string;
   LOG_LEVEL?: string;
   CONVERSATION_IDLE_MINUTES?: string;
+  FOLLOWUP_MINUTES?: string;
+  ARCHIVE_AFTER_DAYS?: string;
+  ARCHIVE_BATCH_SIZE?: string;
   SLA_NUDGE_AFTER_MINUTES?: string;
   SLA_NUDGE_REPEAT_MINUTES?: string;
   SLA_MAX_NUDGES?: string;
@@ -80,6 +83,12 @@ export interface Config {
   rateLimitPerMinute: number;
   /** Idle minutes after which a conversation is considered ended. */
   conversationIdleMinutes: number;
+  /** Minutes after the last answer before asking "anything else?". */
+  followupMinutes: number;
+  /** How long a closed conversation stays in the live tables. */
+  archiveAfterDays: number;
+  /** Conversations moved per weekly run, so one run stays inside the CPU limit. */
+  archiveBatchSize: number;
   sla: SlaPolicy;
 }
 
@@ -197,6 +206,9 @@ export function loadConfig(env: Env): Config {
       env.CONVERSATION_IDLE_MINUTES,
       DEFAULT_IDLE_MINUTES,
     ),
+    followupMinutes: positiveInt(env.FOLLOWUP_MINUTES, DEFAULT_FOLLOWUP_MINUTES),
+    archiveAfterDays: positiveInt(env.ARCHIVE_AFTER_DAYS, 7),
+    archiveBatchSize: positiveInt(env.ARCHIVE_BATCH_SIZE, 200),
     sla,
   };
 }

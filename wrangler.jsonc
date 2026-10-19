@@ -15,8 +15,22 @@
   // Chases tickets nobody has answered. Every five minutes is finer than the
   // 10-minute nudge threshold, so a late ticket is caught promptly rather
   // than waiting out a whole extra interval.
+  // Three schedules, dispatched in `scheduled()` on which one fired. These
+  // strings are matched character-for-character against `event.cron` there,
+  // so changing one here means changing the literal in src/worker.ts too.
+  //
+  // Every minute is the follow-up and survey sweep: the follow-up is due three
+  // minutes after an answer, and a five-minute sweep would deliver it
+  // somewhere between three and eight. Every five is the SLA sweep, the
+  // expensive one, whose thresholds start at ten minutes. Sunday 03:17 UTC is
+  // the weekly archive -- an odd minute rather than the hour, because
+  // schedules on the hour are the most contended.
   "triggers": {
-    "crons": ["*/5 * * * *"]
+    "crons": [
+      "* * * * *",
+      "*/5 * * * *",
+      "17 3 * * 0"
+    ]
   },
 
   // Non-secret configuration. Secrets are set with `wrangler secret put` --
@@ -71,6 +85,18 @@
     // over: the next question starts a new conversation instead of being
     // drafted as a follow-up, and the old one gets an ended_at.
     "CONVERSATION_IDLE_MINUTES": "60",
+
+    // Minutes after the last answer before the bot asks whether anything else
+    // is needed. Short on purpose: the point is to catch the customer while
+    // they are still reading the answer.
+    "FOLLOWUP_MINUTES": "3",
+
+    // How long a closed conversation stays in the live tables before the
+    // weekly archive moves it to the history tables, and how many are moved
+    // per run. Satisfaction survey results are never archived -- they snapshot
+    // what they need and outlive the conversation they rate.
+    "ARCHIVE_AFTER_DAYS": "7",
+    "ARCHIVE_BATCH_SIZE": "200",
     "LOG_LEVEL": "info",
 
     // Minutes of silence before the moderator group is nudged, the minimum

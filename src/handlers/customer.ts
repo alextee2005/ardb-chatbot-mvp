@@ -38,24 +38,17 @@ export async function handleStart(
   ctx: CustomerContext,
   message: TelegramMessage,
 ): Promise<void> {
-  // /start is the customer saying "let's begin", so whatever came before is
-  // over. Closing it here is what gives an interaction an end rather than
-  // leaving it open until the idle sweep notices -- and it stops the next
-  // question being drafted as a follow-up to a thread the customer has
-  // visibly moved on from.
-  const closed = await ctx.store.closeConversation(message.chat.id, "restarted");
-  if (closed) {
-    console.log(
-      JSON.stringify({
-        level: "info",
-        msg: "conversation closed",
-        conversationId: closed.id,
-        reason: "restarted",
-        questionCount: closed.questionCount,
-      }),
-    );
-  }
-
+  // /start no longer ends the conversation.
+  //
+  // An interaction now ends by asking the customer -- "is there anything else
+  // we can help you with?" a few minutes after the last answer -- so the end
+  // is something they confirm rather than something inferred from a command
+  // they may have typed for any reason. Treating /start as an ending also
+  // discarded the thread of anyone who tapped the menu button mid-conversation
+  // and then asked a follow-up, which is the opposite of what they meant.
+  //
+  // An open conversation therefore survives a /start, and the greeting is just
+  // a greeting.
   await ctx.telegram.sendMessage({
     chatId: message.chat.id,
     text: CUSTOMER_MESSAGES.greeting,
@@ -106,6 +99,22 @@ export async function handleQuestion(
     customerChatId: message.chat.id,
     customerUserId: from.id,
   });
+
+  // A new question supersedes any follow-up already asked, so the customer is
+  // asked again once this one is answered rather than only after the first.
+  // Also strips the stale Yes/No buttons: the customer has answered that
+  // question by typing, and leaving them live invites a tap that would now be
+  // meaningless.
+  if (conversation.followupSentAt !== null) {
+    if (conversation.followupMessageId !== null) {
+      await ctx.telegram.editMessageText({
+        chatId: message.chat.id,
+        messageId: conversation.followupMessageId,
+        text: CUSTOMER_MESSAGES.followUp,
+      });
+    }
+    await ctx.store.reopenForMoreQuestions(conversation.id);
+  }
 
   const ticket = await ctx.store.createTicket({
     conversationId: conversation.id,

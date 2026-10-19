@@ -20,7 +20,16 @@ export type ConversationEndReason =
   /** The customer typed /start, which begins a fresh interaction. */
   | "restarted"
   /** A moderator closed it deliberately. */
-  | "moderator";
+  | "moderator"
+  /**
+   * The customer said there was nothing else.
+   *
+   * The only ending the customer actually confirms, which is why it is worth
+   * distinguishing from one that merely went quiet: a satisfaction score
+   * attached to "completed" means something different from the same score
+   * attached to "idle".
+   */
+  | "completed";
 
 export interface Conversation {
   id: number;
@@ -33,6 +42,12 @@ export interface Conversation {
   startedAt: Date;
   lastActivityAt: Date;
   endedAt: Date | null;
+  /** When "is there anything else?" was asked. Reset on each new question. */
+  followupSentAt: Date | null;
+  /** The message carrying the Yes/No buttons, so they can be stripped. */
+  followupMessageId: number | null;
+  surveySentAt: Date | null;
+  surveyMessageId: number | null;
 }
 
 /**
@@ -54,6 +69,15 @@ export interface ConversationTurn {
 
 /** How long a conversation may sit idle before it is considered over. */
 export const DEFAULT_IDLE_MINUTES = 60;
+
+/**
+ * How long after the last answer to ask whether anything else is needed.
+ *
+ * Short on purpose: the point is to catch the customer while they are still
+ * reading the answer, so an interaction ends because they said so rather than
+ * because it timed out an hour later.
+ */
+export const DEFAULT_FOLLOWUP_MINUTES = 3;
 
 export function isOpen(conversation: Conversation): boolean {
   return conversation.status === "open";
@@ -144,4 +168,55 @@ export function renderHistory(turns: readonly ConversationTurn[]): string {
   );
 
   return lines.join("\n");
+}
+
+/**
+ * Whether it is time to ask "is there anything else?".
+ *
+ * Deliberately not just a clock check. The guard that matters is
+ * `hasPendingQuestion`: asking whether there is anything else while the
+ * customer is still waiting for an answer to the last thing they asked would
+ * be worse than saying nothing at all -- it reads as though the bot has
+ * forgotten the question. Three minutes is short enough that an unanswered
+ * ticket is the normal case, not the exception, so this is the common path
+ * rather than an edge case.
+ */
+export function shouldAskFollowup(
+  conversation: Conversation,
+  options: { followupMinutes: number; hasPendingQuestion: boolean; now: Date },
+): boolean {
+  if (!isOpen(conversation)) return false;
+  // Asked once per answer. Cleared when a new question arrives, so the
+  // customer is asked again after each one.
+  if (conversation.followupSentAt !== null) return false;
+  if (options.hasPendingQuestion) return false;
+  // No questions yet means nothing has been answered, so there is nothing to
+  // follow up on -- a /start with no question must not be asked "anything
+  // else?" three minutes later.
+  if (conversation.questionCount === 0) return false;
+
+  const elapsed = options.now.getTime() - conversation.lastActivityAt.getTime();
+  return elapsed >= options.followupMinutes * 60_000;
+}
+
+/**
+ * Whether this conversation still needs a satisfaction survey.
+ *
+ * Only closed conversations are surveyed, and only once. An open conversation
+ * has not ended, so there is nothing yet to rate.
+ */
+export function shouldSendSurvey(conversation: Conversation): boolean {
+  if (isOpen(conversation)) return false;
+  if (conversation.surveySentAt !== null) return false;
+  // Nothing was ever asked, so there is no interaction to rate. A customer who
+  // typed /start and left should not be surveyed about it.
+  return conversation.questionCount > 0;
+}
+
+/** The satisfaction scale. Five points, 1 worst to 5 best. */
+export const SURVEY_SCORES = [1, 2, 3, 4, 5] as const;
+export type SurveyScore = (typeof SURVEY_SCORES)[number];
+
+export function isSurveyScore(value: number): value is SurveyScore {
+  return (SURVEY_SCORES as readonly number[]).includes(value);
 }

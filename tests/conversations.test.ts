@@ -4,6 +4,9 @@ import {
   conversationRef,
   isIdle,
   isOpen,
+  isSurveyScore,
+  shouldAskFollowup,
+  shouldSendSurvey,
   MAX_HISTORY_TURNS,
   renderHistory,
   type Conversation,
@@ -21,6 +24,10 @@ function conversation(overrides: Partial<Conversation> = {}): Conversation {
     startedAt: new Date("2026-10-19T08:00:00Z"),
     lastActivityAt: new Date("2026-10-19T08:00:00Z"),
     endedAt: null,
+    followupSentAt: null,
+    followupMessageId: null,
+    surveySentAt: null,
+    surveyMessageId: null,
     ...overrides,
   };
 }
@@ -119,5 +126,79 @@ describe("renderHistory", () => {
 
   it("tells the model the newest question may refer back", () => {
     expect(renderHistory([turn()])).toContain("follow-up");
+  });
+});
+
+describe("shouldAskFollowup", () => {
+  const start = new Date("2026-10-19T08:00:00Z");
+  const at = (minutes: number) => new Date(start.getTime() + minutes * 60_000);
+  const answered = { followupMinutes: 3, hasPendingQuestion: false, now: at(3) };
+
+  it("asks once the window has passed with nothing pending", () => {
+    const c = conversation({ lastActivityAt: start, questionCount: 1 });
+    expect(shouldAskFollowup(c, answered)).toBe(true);
+    expect(shouldAskFollowup(c, { ...answered, now: at(2) })).toBe(false);
+  });
+
+  it("never asks while a question is still waiting for an answer", () => {
+    // The guard that matters most. "Is there anything else?" sent while the
+    // customer is still waiting reads as though the bot forgot the question --
+    // and at a three-minute threshold an unanswered ticket is the normal case,
+    // not an edge one.
+    const c = conversation({ lastActivityAt: start, questionCount: 1 });
+    expect(shouldAskFollowup(c, { ...answered, hasPendingQuestion: true })).toBe(false);
+    expect(shouldAskFollowup(c, { ...answered, hasPendingQuestion: true, now: at(600) })).toBe(
+      false,
+    );
+  });
+
+  it("asks only once per answer", () => {
+    const c = conversation({ lastActivityAt: start, questionCount: 1, followupSentAt: at(3) });
+    expect(shouldAskFollowup(c, { ...answered, now: at(10) })).toBe(false);
+  });
+
+  it("does not ask when nothing was ever asked", () => {
+    // Someone who typed /start and wandered off has had no interaction, so
+    // there is nothing to follow up on.
+    const c = conversation({ lastActivityAt: start, questionCount: 0 });
+    expect(shouldAskFollowup(c, { ...answered, now: at(600) })).toBe(false);
+  });
+
+  it("does not ask on a closed conversation", () => {
+    const c = conversation({ lastActivityAt: start, questionCount: 1, status: "closed" });
+    expect(shouldAskFollowup(c, answered)).toBe(false);
+  });
+});
+
+describe("shouldSendSurvey", () => {
+  it("surveys a closed conversation that had questions, once", () => {
+    const closed = conversation({ status: "closed", questionCount: 2 });
+    expect(shouldSendSurvey(closed)).toBe(true);
+    expect(shouldSendSurvey({ ...closed, surveySentAt: new Date() })).toBe(false);
+  });
+
+  it("does not survey an interaction that has not ended", () => {
+    expect(shouldSendSurvey(conversation({ status: "open", questionCount: 2 }))).toBe(false);
+  });
+
+  it("does not survey a conversation in which nothing was asked", () => {
+    expect(shouldSendSurvey(conversation({ status: "closed", questionCount: 0 }))).toBe(false);
+  });
+
+  it("surveys whatever the reason for ending", () => {
+    // A score against "idle" means something different from one against
+    // "completed", but both interactions happened and both are worth rating.
+    for (const reason of ["idle", "completed", "moderator", "restarted"] as const) {
+      expect(
+        shouldSendSurvey(conversation({ status: "closed", questionCount: 1, endedReason: reason })),
+      ).toBe(true);
+    }
+  });
+});
+
+describe("isSurveyScore", () => {
+  it("accepts 1 to 5 and nothing else", () => {
+    for (const score of [1, 2, 3, 4, 5]) expect(isSurveyScore(score)).toBe(true);
+    for (const bad of [0, 6, -1, 2.5, Number.NaN, 100]) expect(isSurveyScore(bad)).toBe(false);
   });
 });
