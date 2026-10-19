@@ -75,6 +75,21 @@ export function buildSystemBlocks(knowledge: KnowledgeBase): SystemBlock[] {
 }
 
 /**
+ * The same prompt as one string, for providers with no block structure.
+ *
+ * Deliberately built from the same two pieces in the same order as
+ * `buildSystemBlocks`, so a draft is grounded identically whichever provider
+ * writes it. If the instructions and the corpus ever diverge between the two,
+ * two deployments of this bot would answer the same question from different
+ * material -- which is the one thing the moderator reading a card cannot see.
+ */
+export function buildSystemPrompt(knowledge: KnowledgeBase): string {
+  return buildSystemBlocks(knowledge)
+    .map((block) => block.text)
+    .join("\n\n");
+}
+
+/**
  * The user turn. The detected language is passed as a hint rather than an
  * instruction: Claude sees the raw question too and is better placed than a
  * regex to judge Latin-script Khmer or a mixed sentence.

@@ -2,12 +2,13 @@
  * The customer side: /start, and questions arriving in a private chat.
  */
 
-import { draftResponse, type ClaudeConfig } from "../adapters/claude.js";
+import type { DraftResult } from "../adapters/claude.js";
 import { displayName, type TelegramClient, type TelegramMessage } from "../adapters/telegram.js";
 import type { Store } from "../adapters/store.js";
 import { detectLanguage } from "../core/language.js";
 import { CUSTOMER_MESSAGES } from "../core/messages.js";
 import { renderCard, renderKeyboard } from "../core/moderator-card.js";
+import type { DraftRequest } from "../core/draft.js";
 import type { KnowledgeBase } from "../core/knowledge.js";
 import type { Ticket } from "../core/tickets.js";
 
@@ -15,8 +16,14 @@ export interface CustomerContext {
   telegram: TelegramClient;
   store: Store;
   knowledge: KnowledgeBase;
-  /** Null when no Claude key is configured -- moderator writes every answer. */
-  claude: ClaudeConfig | null;
+  /**
+   * Writes the suggested answer, or null for moderator-only.
+   *
+   * A function rather than a provider's configuration, so this handler never
+   * learns which service is behind it -- adding a third provider touches
+   * worker.ts and one adapter, not the flow.
+   */
+  draft: ((request: DraftRequest) => Promise<DraftResult>) | null;
   moderatorChatId: number;
   rateLimitPerMinute: number;
 }
@@ -121,8 +128,8 @@ export async function handleQuestion(
  * draft and a customer.
  */
 async function draftAndUpdateCard(ctx: CustomerContext, ticket: Ticket): Promise<void> {
-  const result = ctx.claude
-    ? await draftResponse(ctx.claude, {
+  const result = ctx.draft
+    ? await ctx.draft({
         question: ticket.question,
         questionLanguage: ticket.questionLanguage,
         knowledge: ctx.knowledge,
@@ -130,8 +137,8 @@ async function draftAndUpdateCard(ctx: CustomerContext, ticket: Ticket): Promise
     : {
         ok: false as const,
         error:
-          "No Claude key is configured, so there is no suggested answer. " +
-          "Tap Edit and write the reply.",
+          "No drafting provider is configured, so there is no suggested " +
+          "answer. Tap Edit and write the reply.",
       };
 
   const updated = result.ok
@@ -140,7 +147,7 @@ async function draftAndUpdateCard(ctx: CustomerContext, ticket: Ticket): Promise
 
   await ctx.store.recordEvent({
     ticketId: ticket.id,
-    event: result.ok ? "draft_created" : ctx.claude ? "draft_failed" : "draft_skipped",
+    event: result.ok ? "draft_created" : ctx.draft ? "draft_failed" : "draft_skipped",
     detail: result.ok ? result.text : result.error,
   });
 

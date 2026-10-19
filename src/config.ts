@@ -7,7 +7,18 @@
 
 import { DEFAULT_SLA_POLICY, type SlaPolicy } from "./core/sla.js";
 
+/** Who writes the suggested answer, if anyone. */
+export type DraftProvider = "claude" | "workers-ai" | "none";
+
+const PROVIDERS = ["claude", "workers-ai", "none"] as const;
+
 export interface Env {
+  /**
+   * Cloudflare's own inference, bound in wrangler.jsonc. Present whenever the
+   * binding is configured, with no credential of any kind.
+   */
+  AI?: Ai;
+
   // Secrets -- `wrangler secret put <NAME>`.
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_WEBHOOK_SECRET: string;
@@ -21,8 +32,10 @@ export interface Env {
   ANTHROPIC_API_KEY?: string;
 
   // Plain vars from wrangler.jsonc.
+  DRAFT_PROVIDER?: string;
   CLAUDE_MODEL?: string;
   CLAUDE_EFFORT?: string;
+  WORKERS_AI_MODEL?: string;
   RATE_LIMIT_PER_MINUTE?: string;
   LOG_LEVEL?: string;
   SLA_NUDGE_AFTER_MINUTES?: string;
@@ -37,9 +50,22 @@ export interface Config {
   moderatorChatId: number;
   /** Null when no key is configured; drafting is then skipped entirely. */
   anthropicApiKey: string | null;
+  /**
+   * Cloudflare's inference binding, carried here alongside the API key so
+   * that choosing a provider needs only Config and never the raw Env -- which
+   * keeps every other secret out of reach of the code that drafts.
+   */
+  ai: Ai | null;
   databaseUrl: string;
+  /**
+   * The provider that can actually run, which is not always the one asked
+   * for: "claude" with no key resolves to "none" rather than failing every
+   * webhook call. `/health` reports this value, not the requested one.
+   */
+  draftProvider: DraftProvider;
   claudeModel: string;
   claudeEffort: "low" | "medium" | "high" | "xhigh" | "max";
+  workersAiModel: string;
   rateLimitPerMinute: number;
   sla: SlaPolicy;
 }
@@ -76,6 +102,22 @@ export function loadConfig(env: Env): Config {
     );
   }
 
+  const requested = env.DRAFT_PROVIDER ?? "workers-ai";
+  if (!(PROVIDERS as readonly string[]).includes(requested)) {
+    throw new ConfigError(
+      `DRAFT_PROVIDER must be one of ${PROVIDERS.join(", ")}, got "${requested}"`,
+    );
+  }
+
+  // Resolve what can run, rather than what was asked for. A provider that
+  // cannot run degrades to moderator-only: the queue keeps working and a
+  // person writes the answer. Only a typo in the name above is fatal, because
+  // that is a mistake rather than a missing optional dependency.
+  const anthropicApiKey = env.ANTHROPIC_API_KEY?.trim() ? env.ANTHROPIC_API_KEY : null;
+  let draftProvider: DraftProvider = requested as DraftProvider;
+  if (draftProvider === "claude" && !anthropicApiKey) draftProvider = "none";
+  if (draftProvider === "workers-ai" && !env.AI) draftProvider = "none";
+
   const effort = env.CLAUDE_EFFORT ?? "low";
   if (!(EFFORTS as readonly string[]).includes(effort)) {
     throw new ConfigError(
@@ -108,12 +150,18 @@ export function loadConfig(env: Env): Config {
     // must work. Drafting is an accelerator on top of it, so a bot with no
     // Claude key should run with a human writing every answer rather than
     // refuse to start. An empty string counts as absent.
-    anthropicApiKey: env.ANTHROPIC_API_KEY?.trim() ? env.ANTHROPIC_API_KEY : null,
+    anthropicApiKey,
+    ai: env.AI ?? null,
     databaseUrl: env.DATABASE_URL,
     // Matches the var in wrangler.jsonc. A cheap default rather than an
     // expensive one: a missing var should not quietly cost 40x more per
     // question than the deployment intends.
+    draftProvider,
     claudeModel: env.CLAUDE_MODEL ?? "claude-haiku-5-5",
+    // Confirmed 128K context window, which matters because the whole corpus
+    // (~20,000 tokens) is sent with every question and Workers AI has no
+    // prompt cache to put it behind.
+    workersAiModel: env.WORKERS_AI_MODEL ?? "@cf/openai/gpt-oss-20b",
     claudeEffort: effort as Config["claudeEffort"],
     rateLimitPerMinute: positiveInt(env.RATE_LIMIT_PER_MINUTE, 3),
     sla,

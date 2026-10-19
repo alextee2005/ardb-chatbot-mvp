@@ -17,6 +17,51 @@ describe("loadConfig", () => {
     expect(config.anthropicApiKey).toBeNull();
   });
 
+  describe("draft provider", () => {
+    const ai = {} as Ai;
+
+    it("defaults to Workers AI when the binding is present", () => {
+      expect(loadConfig({ ...required, AI: ai }).draftProvider).toBe("workers-ai");
+      expect(loadConfig({ ...required, AI: ai }).workersAiModel).toBe("@cf/openai/gpt-oss-20b");
+    });
+
+    it("degrades to none when the chosen provider cannot run", () => {
+      // The queue is the product. A provider that cannot run must not take
+      // the bot down with it -- a question still reaches a moderator, who
+      // writes the answer. Both directions of the mistake are covered:
+      expect(loadConfig({ ...required, DRAFT_PROVIDER: "workers-ai" }).draftProvider).toBe("none");
+      expect(loadConfig({ ...required, DRAFT_PROVIDER: "claude" }).draftProvider).toBe("none");
+    });
+
+    it("uses the provider when it can run", () => {
+      expect(
+        loadConfig({ ...required, DRAFT_PROVIDER: "claude", ANTHROPIC_API_KEY: "sk-ant-x" })
+          .draftProvider,
+      ).toBe("claude");
+      expect(
+        loadConfig({ ...required, DRAFT_PROVIDER: "workers-ai", AI: ai }).draftProvider,
+      ).toBe("workers-ai");
+    });
+
+    it("honours an explicit none even with a provider available", () => {
+      expect(
+        loadConfig({ ...required, DRAFT_PROVIDER: "none", AI: ai, ANTHROPIC_API_KEY: "sk-ant-x" })
+          .draftProvider,
+      ).toBe("none");
+    });
+
+    it("rejects an unknown provider name", () => {
+      // A typo is a mistake, not a missing optional dependency, and silently
+      // falling back would hide it for as long as nobody reads /health.
+      expect(() => loadConfig({ ...required, DRAFT_PROVIDER: "cloudflare" })).toThrow(ConfigError);
+    });
+
+    it("carries the binding through on config, not the raw env", () => {
+      expect(loadConfig({ ...required, AI: ai }).ai).toBe(ai);
+      expect(loadConfig(required).ai).toBeNull();
+    });
+  });
+
   it("names every missing secret at once", () => {
     // One pass, not one error per deploy: someone setting up five secrets
     // should not have to redeploy four times to discover the list.

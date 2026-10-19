@@ -228,7 +228,24 @@ handled in `ctx.waitUntil`. Telegram retries a webhook it considers slow, and a
 retry would file a second ticket for one question — so the fast `200` plus the
 `processed_updates` dedupe table are two halves of one defence.
 
-**Claude Haiku 5.5 at `low` effort.** Around $0.003 a question against
+**Drafting is pluggable, and optional.** `DRAFT_PROVIDER` picks between
+`workers-ai` (the default), `claude`, and `none`. The handler holds a draft
+function rather than a provider's configuration, so a third provider touches
+`worker.ts` and one adapter, not the flow. A provider that cannot run -- the
+`claude` setting with no API key -- resolves to `none` rather than failing
+every webhook call, and `/health` reports which one is actually in effect.
+
+**Workers AI needs no credential at all.** Inference runs on Cloudflare
+through the `AI` binding, so there is no key to leak or fund. 10,000 neurons a
+day are free, resetting at 00:00 UTC. On `@cf/openai/gpt-oss-20b` a question
+costs roughly 440 neurons -- about 22 free a day, which suits a test bot. Two
+properties of Workers AI drive the model choice: there is no prompt cache, so
+every question pays full price for the whole corpus; and context windows vary
+sharply by model, and the corpus is ~20,000 tokens of that window before the
+question is added. Past the daily allowance the card says so and names the
+reset time, and the moderator writes the reply.
+
+**Claude Haiku 5.5 at `low` effort** (when `DRAFT_PROVIDER=claude`)**.** Around $0.003 a question against
 $0.02-0.13 on Opus 5.5, and the moderator review every draft already goes
 through is what makes that trade reasonable: nothing reaches a customer
 unread. On both models `budget_tokens` is rejected and thinking cannot be

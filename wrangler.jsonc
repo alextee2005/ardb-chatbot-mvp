@@ -6,6 +6,12 @@
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
 
+  // Cloudflare's own inference. No credential of any kind -- the binding is
+  // the access. 10,000 neurons a day are free, resetting at 00:00 UTC; past
+  // that, drafting stops and the moderator writes the answer, which the card
+  // says in as many words.
+  "ai": { "binding": "AI" },
+
   // Chases tickets nobody has answered. Every five minutes is finer than the
   // 10-minute nudge threshold, so a late ticket is caught promptly rather
   // than waiting out a whole extra interval.
@@ -23,6 +29,23 @@
     // against $0.02-0.13 on Opus. Raise this to claude-opus-5-5 if drafts
     // start needing heavy editing. Haiku has no server-side refusal
     // fallback, which src/adapters/claude.ts accounts for by model.
+    // Who writes the suggested answer: "workers-ai", "claude", or "none" for
+    // a moderator-written reply every time. A provider that cannot run --
+    // "claude" with no API key -- degrades to "none" rather than failing the
+    // webhook, and /health reports which one is actually in effect.
+    "DRAFT_PROVIDER": "workers-ai",
+
+    // Confirmed 128,000-token context window, which is the binding
+    // constraint: the whole corpus (~20,000 tokens) is sent with every
+    // question and Workers AI has no prompt cache to put it behind. Works out
+    // at roughly 440 neurons a question, so about 22 free questions a day.
+    //
+    // @cf/meta/llama-3.1-8b-instruct-fp8-fast is far cheaper per input token
+    // (~123 neurons a question, ~80 a day) but Cloudflare documents only
+    // 32,000 tokens for its non-fast sibling, which leaves little headroom
+    // over the corpus. Check the model's page before switching.
+    "WORKERS_AI_MODEL": "@cf/openai/gpt-oss-20b",
+
     "CLAUDE_MODEL": "claude-haiku-5-5",
     "CLAUDE_EFFORT": "low",
     "RATE_LIMIT_PER_MINUTE": "3",

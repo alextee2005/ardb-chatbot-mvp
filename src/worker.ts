@@ -14,9 +14,12 @@
 // into the other, and only the corpus is single-language and reviewed.
 import knowledgeJson from "../knowledge/corpus/ardb-corpus.json";
 
+import { draftResponse, type DraftResult } from "./adapters/claude.js";
+import { draftWithWorkersAi } from "./adapters/workers-ai.js";
 import { Store } from "./adapters/store.js";
 import { TelegramClient } from "./adapters/telegram.js";
 import { loadConfig, ConfigError, type Env } from "./config.js";
+import type { DraftRequest } from "./core/draft.js";
 import { isPlaceholder, type KnowledgeBase } from "./core/knowledge.js";
 import { CUSTOMER_MESSAGES } from "./core/messages.js";
 import {
@@ -34,6 +37,36 @@ import { runSlaSweep } from "./handlers/sla.js";
 import type { TelegramMessage } from "./adapters/telegram.js";
 
 const knowledge = knowledgeJson as KnowledgeBase;
+
+/**
+ * Bind the configured provider into a single function, or null for
+ * moderator-only.
+ *
+ * `config.draftProvider` is already the *effective* provider: loadConfig
+ * resolves a provider it cannot run down to "none", so this never has to
+ * check for a missing key or binding a second time.
+ */
+function selectDrafter(
+  config: ReturnType<typeof loadConfig>,
+): ((request: DraftRequest) => Promise<DraftResult>) | null {
+  switch (config.draftProvider) {
+    case "claude":
+      return (request) =>
+        draftResponse(
+          {
+            apiKey: config.anthropicApiKey!,
+            model: config.claudeModel,
+            effort: config.claudeEffort,
+          },
+          request,
+        );
+    case "workers-ai":
+      return (request) =>
+        draftWithWorkersAi({ binding: config.ai!, model: config.workersAiModel }, request);
+    case "none":
+      return null;
+  }
+}
 
 interface TelegramUpdate {
   update_id: number;
@@ -56,7 +89,15 @@ export default {
         // Whether questions get a suggested answer, or go to the group for a
         // moderator to write. Reported because the symptom of a missing key
         // is subtle -- cards arrive, just without drafts.
-        drafting: Boolean(env.ANTHROPIC_API_KEY?.trim()),
+        // Reported because the symptom of a drafting misconfiguration is
+        // subtle: cards still arrive, just without suggested answers. Read
+        // from env rather than loadConfig so /health answers on a Worker with
+        // no secrets set at all.
+        drafting: {
+          provider: env.DRAFT_PROVIDER ?? "workers-ai",
+          claudeKey: Boolean(env.ANTHROPIC_API_KEY?.trim()),
+          workersAi: Boolean(env.AI),
+        },
       });
     }
 
@@ -195,13 +236,7 @@ async function processUpdate(
       telegram,
       store,
       knowledge,
-      claude: config.anthropicApiKey
-        ? {
-            apiKey: config.anthropicApiKey,
-            model: config.claudeModel,
-            effort: config.claudeEffort,
-          }
-        : null,
+      draft: selectDrafter(config),
       moderatorChatId: config.moderatorChatId,
       rateLimitPerMinute: config.rateLimitPerMinute,
     };
