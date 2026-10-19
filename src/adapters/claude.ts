@@ -163,6 +163,20 @@ function describeError(error: unknown): string {
     return "Could not reach the Claude API.";
   }
   if (error instanceof Anthropic.APIError) {
+    // An exhausted balance arrives as a 400 invalid_request_error, not the 402
+    // its meaning suggests, so it is indistinguishable from a malformed
+    // request by status and type alone. It is also the one 400 that is not a
+    // bug: nothing in this repo can fix it and no redeploy will help, so it
+    // names the remedy instead of inviting someone to debug the request.
+    if (error.status === 400 && /credit balance is too low/i.test(apiMessage(error))) {
+      return (
+        "The Anthropic account funding this bot is out of credits, so Claude " +
+        "could not draft a reply. Top it up under Plans & Billing, or switch " +
+        "DRAFT_PROVIDER to \"workers-ai\" (no credential, no cost) or \"none\" " +
+        "for moderator-written replies."
+      );
+    }
+
     // The request ID is what Anthropic support asks for first.
     const reference = error.requestID ? ` [${error.requestID}]` : "";
     return (

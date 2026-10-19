@@ -122,3 +122,42 @@ describe("supportsServerSideFallback", () => {
     expect(supportsServerSideFallback("claude-sonnet-5-5")).toBe(true);
   });
 });
+
+describe("an exhausted Anthropic balance", () => {
+  it("is named as a billing problem, not reported as a malformed request", async () => {
+    // Anthropic returns this as a 400 invalid_request_error rather than a 402,
+    // so by status and type it is indistinguishable from a bad parameter. It
+    // is the one 400 that is not a bug in this repo: a moderator reading the
+    // card should see the remedy, not be sent to debug a request that is fine.
+    const spy = vi.spyOn(Anthropic.Beta.Messages.prototype, "create").mockRejectedValue(
+      Anthropic.APIError.generate(
+        400,
+        {
+          type: "error",
+          error: {
+            type: "invalid_request_error",
+            message:
+              "Your credit balance is too low to access the Anthropic API. " +
+              "Please go to Plans & Billing to upgrade or purchase credits.",
+          },
+        },
+        undefined,
+        new Headers(),
+      ),
+    );
+    try {
+      const result = await draftResponse(
+        { apiKey: "sk-ant-test", model: "claude-haiku-5-5", effort: "low" },
+        request,
+      );
+      expect(result.ok).toBe(false);
+      const text = result.ok ? "" : result.error;
+      expect(text).toContain("out of credits");
+      expect(text).toContain("workers-ai");
+      // The raw 400 would send someone looking for a bad parameter.
+      expect(text).not.toContain("invalid_request_error");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
