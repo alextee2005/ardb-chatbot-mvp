@@ -1,0 +1,226 @@
+name: Deploy the bot
+
+# The whole deployment, from a button. No terminal, no local Node, no
+# Cloudflare dashboard: every value is a GitHub repository secret, entered
+# through GitHub's own UI, and this workflow does the three things that
+# otherwise need a command line -- deploy the Worker, set its secrets, and
+# register the Telegram webhook.
+#
+# One happy side effect: TELEGRAM_WEBHOOK_SECRET reaches the Worker and
+# Telegram from the same GitHub secret in the same run, so the two cannot
+# disagree. A mismatch there is the most common cause of a silent bot, and it
+# is not reachable from here.
+#
+# Required repository secrets (Settings -> Secrets and variables -> Actions):
+#   CLOUDFLARE_API_TOKEN      Cloudflare -> My Profile -> API Tokens,
+#                             "Edit Cloudflare Workers" template
+#   TELEGRAM_BOT_TOKEN        BotFather
+#   TELEGRAM_WEBHOOK_SECRET   any long random string you invent
+#   MODERATOR_CHAT_ID         the private group's negative chat ID
+#   DATABASE_URL              Neon, pooled (hostname contains -pooler)
+#
+# Optional:
+#   CLOUDFLARE_ACCOUNT_ID     only if the token can see several accounts
+#   ANTHROPIC_API_KEY         only if you switch DRAFT_PROVIDER to "claude"
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and check the credentials without deploying"
+        required: false
+        default: false
+        type: boolean
+      set_webhook:
+        description: "Point Telegram at the Worker after deploying"
+        required: false
+        default: true
+        type: boolean
+      worker_url:
+        description: "Override the Worker URL (normally read from the deploy)"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  # Two concurrent deploys of the same Worker would race, and the loser's
+  # secrets could land on the winner's code.
+  group: deploy-bot
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy, set secrets, register webhook
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+
+      - run: npm ci
+
+      # Fail here rather than halfway through, naming the exact secret to add.
+      # Someone working only in a browser cannot read a stack trace to find
+      # out which value was missing.
+      - name: Check the repository secrets
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
+          MODERATOR_CHAT_ID: ${{ secrets.MODERATOR_CHAT_ID }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in CLOUDFLARE_API_TOKEN TELEGRAM_BOT_TOKEN \
+                      TELEGRAM_WEBHOOK_SECRET MODERATOR_CHAT_ID DATABASE_URL; do
+            if [ -z "${!name:-}" ]; then missing+=("${name}"); fi
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing repository secret(s): ${missing[*]}. Add them under Settings → Secrets and variables → Actions → New repository secret."
+            exit 1
+          fi
+
+          # Shape checks only -- never the values themselves. Each of these is
+          # a mistake that otherwise surfaces much later as a silent bot.
+          case "${MODERATOR_CHAT_ID}" in
+            -*) ;;
+            *) echo "::warning::MODERATOR_CHAT_ID is not negative. Group chat IDs are negative; a positive one is a private chat, which is the one place a moderator card must never go." ;;
+          esac
+          case "${DATABASE_URL}" in
+            *-pooler*) ;;
+            *) echo "::warning::DATABASE_URL has no -pooler in its hostname. The Worker is serverless and wants Neon's pooled connection string." ;;
+          esac
+          echo "All five secrets are present."
+
+      - name: Typecheck and test
+        # A deploy of code that does not compile is worse than no deploy: the
+        # Worker that was serving is replaced by one that throws.
+        run: npm run check
+
+      - name: Deploy the Worker
+        id: deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          if [ "${DRY_RUN}" = "true" ]; then
+            npx wrangler deploy --dry-run --outdir "${RUNNER_TEMP}/build"
+            echo "Dry run — nothing deployed."
+            exit 0
+          fi
+
+          npx wrangler deploy | tee "${RUNNER_TEMP}/deploy.log"
+
+          # wrangler prints the deployed URL; take the first workers.dev URL it
+          # reports. An override input covers a custom domain or a change in
+          # that output.
+          url="$(grep -oE 'https://[a-zA-Z0-9._-]+\.workers\.dev' "${RUNNER_TEMP}/deploy.log" | head -1 || true)"
+          if [ -n "${url}" ]; then
+            echo "url=${url}" >> "${GITHUB_OUTPUT}"
+            echo "Deployed to ${url}"
+          else
+            echo "::warning::Could not read the Worker URL from the deploy output. Pass it as the worker_url input to register the webhook."
+          fi
+
+      - name: Set the Worker's secrets
+        if: inputs.dry_run != true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
+          MODERATOR_CHAT_ID: ${{ secrets.MODERATOR_CHAT_ID }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          # Built with jq --arg and piped on stdin, so no secret is ever a
+          # command-line argument (visible in a process listing) or echoed to
+          # the log. `secret bulk` leaves any key we omit untouched, which is
+          # why ANTHROPIC_API_KEY is only included when it exists.
+          args=(
+            --arg token "${TELEGRAM_BOT_TOKEN}"
+            --arg webhook "${TELEGRAM_WEBHOOK_SECRET}"
+            --arg moderator "${MODERATOR_CHAT_ID}"
+            --arg database "${DATABASE_URL}"
+          )
+          filter='{
+            TELEGRAM_BOT_TOKEN: $token,
+            TELEGRAM_WEBHOOK_SECRET: $webhook,
+            MODERATOR_CHAT_ID: $moderator,
+            DATABASE_URL: $database
+          }'
+          if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+            args+=(--arg anthropic "${ANTHROPIC_API_KEY}")
+            filter="${filter} + {ANTHROPIC_API_KEY: \$anthropic}"
+          fi
+
+          jq -n "${args[@]}" "${filter}" | npx wrangler secret bulk
+          echo "Secrets set. Values are not printed by this step."
+
+      - name: Register the Telegram webhook
+        if: inputs.dry_run != true && inputs.set_webhook
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
+          DEPLOYED_URL: ${{ steps.deploy.outputs.url }}
+          OVERRIDE_URL: ${{ inputs.worker_url }}
+        run: |
+          set -euo pipefail
+          WORKER_URL="${OVERRIDE_URL:-${DEPLOYED_URL}}"
+          if [ -z "${WORKER_URL}" ]; then
+            echo "::error::No Worker URL. Re-run with the worker_url input set to your Worker's origin, e.g. https://ardb-chatbot.<subdomain>.workers.dev (no path -- the script appends /telegram/webhook)."
+            exit 1
+          fi
+          export WORKER_URL
+          npm run set-webhook
+
+      - name: Verify
+        if: inputs.dry_run != true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          DEPLOYED_URL: ${{ steps.deploy.outputs.url }}
+          OVERRIDE_URL: ${{ inputs.worker_url }}
+        run: |
+          set -euo pipefail
+          WORKER_URL="${OVERRIDE_URL:-${DEPLOYED_URL}}"
+
+          {
+            echo "## Deployment"
+            echo
+            if [ -n "${WORKER_URL}" ]; then
+              echo "Worker: ${WORKER_URL}"
+              echo
+              echo '```json'
+              # /health needs no secrets and reports the corpus version and
+              # which drafting provider is actually in effect.
+              curl -s --max-time 20 "${WORKER_URL}/health" 2>/dev/null \
+                || echo '{"error":"health check failed"}'
+              echo
+              echo '```'
+            fi
+            echo
+            echo "### Telegram webhook"
+            echo
+            echo '```json'
+            # stderr is discarded rather than logged: the request URL carries
+            # the bot token, and a verbose curl failure can quote the URL it
+            # was given. GitHub masks registered secrets, but not relying on
+            # that is cheaper than finding out it missed one.
+            curl -s --max-time 20 \
+              "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo" 2>/dev/null \
+              | jq '.result | {url, pending_update_count, last_error_message, last_error_date}' \
+              || echo '{"error":"could not read the webhook state"}'
+            echo '```'
+            echo
+            echo "Now DM the bot \`/start\`. It replies only in a private chat."
+          } >> "${GITHUB_STEP_SUMMARY}"
