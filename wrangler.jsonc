@@ -43,48 +43,17 @@
   // never add TELEGRAM_BOT_TOKEN, ANTHROPIC_API_KEY, DATABASE_URL,
   // MODERATOR_CHAT_ID or TELEGRAM_WEBHOOK_SECRET here.
   "vars": {
-    // Haiku 5.5 for drafting. Every draft is read and approved by a
-    // moderator before a customer sees it, which is the safety net that makes
-    // the cheaper model a reasonable trade -- roughly $0.003 a question
-    // against $0.02-0.13 on Opus. Raise this to claude-opus-5-5 if drafts
-    // start needing heavy editing. Haiku has no server-side refusal
-    // fallback, which src/adapters/claude.ts accounts for by model.
-    // Who writes the suggested answer: "workers-ai", "claude", or "none" for
-    // a moderator-written reply every time. A provider that cannot run --
-    // "claude" with no API key -- degrades to "none" rather than failing the
-    // webhook, and /health reports which one is actually in effect.
-    // The committed default needs no credential, so a fresh clone always
-    // deploys. The "github" route needs a dispatch token, and a default that
-    // demands a secret nobody has created yet turns a working deployment into
-    // an undeployable one -- which is exactly what it did. Choose the route
-    // per deploy with the draft_provider input on the Deploy workflow.
-    "DRAFT_PROVIDER": "workers-ai",
-
-    // Only for DRAFT_PROVIDER "github": which repository receives the
-    // dispatch. No default -- guessing a repository name would send a ticket
-    // ID to someone else's workflow. The token goes in a Worker secret
-    // (GITHUB_DISPATCH_TOKEN); this is just the address.
-    "GITHUB_REPOSITORY": "alextee2005/ardb-chatbot-mvp",
-
-    // Confirmed 128,000-token context window, which is the binding
-    // constraint: the whole corpus (~20,000 tokens) is sent with every
-    // question and Workers AI has no prompt cache to put it behind. Works out
-    // at roughly 440 neurons a question, so about 22 free questions a day.
+    // Sonnet 5.5 for drafting. Every draft is read and approved by a
+    // moderator before a customer sees it, which is the safety net that
+    // makes a non-frontier model acceptable here.
     //
-    // gpt-oss answers in OpenAI's chat-completions or responses shape, not
-    // the plain {response} of the text-generation models, and it reasons on
-    // every request from the same output budget as the answer. The adapter
-    // reads all three shapes and turns its effort down; a model family in a
-    // fourth shape would report "no text in any shape this adapter reads"
-    // along with the keys it did get.
-    //
-    // @cf/meta/llama-3.1-8b-instruct-fp8-fast is far cheaper per input token
-    // (~123 neurons a question, ~80 a day) but Cloudflare documents only
-    // 32,000 tokens for its non-fast sibling, which leaves little headroom
-    // over the corpus. Check the model's page before switching.
-    "WORKERS_AI_MODEL": "@cf/openai/gpt-oss-20b",
+    // On the "github" route this is passed to the Claude Code CLI, which
+    // authenticates with a Claude subscription rather than per-token
+    // billing -- so the cost of moving up from Haiku is subscription
+    // budget, not a bill. Override as a repository variable named
+    // CLAUDE_MODEL to change it without touching code.
 
-    "CLAUDE_MODEL": "claude-haiku-5-5",
+    "CLAUDE_MODEL": "claude-sonnet-5-5",
     "CLAUDE_EFFORT": "low",
     "RATE_LIMIT_PER_MINUTE": "3",
     // Minutes of silence after which a customer's interaction is treated as

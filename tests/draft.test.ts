@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import { supportsServerSideFallback } from "../src/adapters/claude.js";
-import { buildSystemBlocks, buildUserMessage } from "../src/core/draft.js";
+import {
+  buildSystemBlocks,
+  buildUserMessage,
+  DRAFTING_INSTRUCTIONS,
+} from "../src/core/draft.js";
 import { isPlaceholder, renderKnowledge, type KnowledgeBase } from "../src/core/knowledge.js";
 
 const empty: KnowledgeBase = {
@@ -249,5 +253,37 @@ describe("conversation history in the prompt", () => {
 
   it("frames the question as the newest of a thread once there is history", () => {
     expect(buildUserMessage({ ...base, history })).toContain("newest question");
+  });
+});
+
+describe("presentation rules", () => {
+  it("asks for a literal bullet character, not Markdown", () => {
+    // Load-bearing, and not obvious from reading the handler: the final answer
+    // is sent to the customer with no parse_mode, so nothing is rendered. A
+    // Markdown "-" or "*" bullet would arrive as a literal hyphen or asterisk,
+    // and "**bold**" with its asterisks showing. If anyone ever adds
+    // parseMode to that sendMessage call, this rule needs revisiting --
+    // which is why the reason is stated in the prompt itself.
+    expect(DRAFTING_INSTRUCTIONS).toContain("• ");
+    expect(DRAFTING_INSTRUCTIONS).toMatch(/literal hyphen or asterisk/);
+  });
+
+  it("tells the model when a list is the wrong shape", () => {
+    // Bullets everywhere are worse than none: a single-item list and a
+    // sentence chopped into lines both read as padding, and the instruction
+    // has to rule them out explicitly or "use bullet points" turns every
+    // answer into a form.
+    expect(DRAFTING_INSTRUCTIONS).toMatch(/Do not make a list of one item/);
+    expect(DRAFTING_INSTRUCTIONS).toMatch(/three or more is usually a list/i);
+  });
+
+  it("keeps numbered steps available for ordered answers", () => {
+    // An application's steps have a genuine order; a document checklist does
+    // not. Numbers are plain text, so they are safe to use.
+    expect(DRAFTING_INSTRUCTIONS).toMatch(/order genuinely matters/);
+  });
+
+  it("still forbids HTML and emoji", () => {
+    expect(DRAFTING_INSTRUCTIONS).toMatch(/No HTML, no emoji/);
   });
 });

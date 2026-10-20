@@ -66,7 +66,7 @@ if (ticket.draft) {
 
 console.log(
   `Drafting ticket ${ticketId} (${ticket.questionLanguage}, ${ticket.question.length} chars) ` +
-    `against corpus ${knowledge.version} with ${env.CLAUDE_MODEL?.trim() || "claude-haiku-5-5"}.`,
+    `against corpus ${knowledge.version} with ${env.CLAUDE_MODEL?.trim() || "claude-sonnet-5-5"}.`,
 );
 
 await draftAndUpdateCard(
@@ -79,7 +79,7 @@ await draftAndUpdateCard(
       draftResponse(
         {
           apiKey: anthropicApiKey,
-          model: env.CLAUDE_MODEL?.trim() || "claude-haiku-5-5",
+          model: env.CLAUDE_MODEL?.trim() || "claude-sonnet-5-5",
           effort: effort as (typeof EFFORTS)[number],
         },
         request,

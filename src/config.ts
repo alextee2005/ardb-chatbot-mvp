@@ -201,7 +201,7 @@ export function loadConfig(env: Env): Config {
     // expensive one: a missing var should not quietly cost 40x more per
     // question than the deployment intends.
     draftProvider,
-    claudeModel: env.CLAUDE_MODEL ?? "claude-haiku-5-5",
+    claudeModel: env.CLAUDE_MODEL ?? "claude-sonnet-5-5",
     // Confirmed 128K context window, which matters because the whole corpus
     // (~20,000 tokens) is sent with every question and Workers AI has no
     // prompt cache to put it behind.

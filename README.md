@@ -459,7 +459,11 @@ sharply by model, and the corpus is ~20,000 tokens of that window before the
 question is added. Past the daily allowance the card says so and names the
 reset time, and the moderator writes the reply.
 
-**Claude Haiku 5.5 at `low` effort** (when `DRAFT_PROVIDER=claude`)**.** Around $0.003 a question against
+**Claude Sonnet 5.5 at `low` effort** (when `DRAFT_PROVIDER=claude`)**.** Billed per
+token on that route; on the `github` route the same model runs through the Claude
+Code CLI against a Claude subscription, so it costs subscription budget rather
+than a bill. It replaced Haiku 5.5, which answered correctly but set lists out
+as comma-joined prose.
 $0.02-0.13 on Opus 5.5, and the moderator review every draft already goes
 through is what makes that trade reasonable: nothing reaches a customer
 unread. On both models `budget_tokens` is rejected and thinking cannot be

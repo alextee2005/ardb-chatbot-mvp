@@ -49,7 +49,7 @@ env:
   TICKET_ID: ${{ github.event.client_payload.ticket_id || inputs.ticket_id }}
   # Same default as the Worker. Override as a repository variable to change
   # the model without touching code.
-  CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL || 'claude-haiku-5-5' }}
+  CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL || 'claude-sonnet-5-5' }}
 
 jobs:
   draft:

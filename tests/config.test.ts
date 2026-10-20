@@ -146,7 +146,7 @@ describe("loadConfig", () => {
 
   it("defaults the model and effort, and rejects an unknown effort", () => {
     const config = loadConfig(required);
-    expect(config.claudeModel).toBe("claude-haiku-5-5");
+    expect(config.claudeModel).toBe("claude-sonnet-5-5");
     expect(config.claudeEffort).toBe("low");
     expect(() => loadConfig({ ...required, CLAUDE_EFFORT: "maximum" })).toThrow(ConfigError);
   });
