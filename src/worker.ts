@@ -143,7 +143,7 @@ const WEBHOOK_PATH = "/telegram/webhook";
  * silently dropped.
  */
 const SLA_CRON = "*/5 * * * *";
-const WEEKLY_ARCHIVE_CRON = "17 3 * * 0";
+const WEEKLY_ARCHIVE_CRON = "17 3 * * SUN";
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -233,7 +233,9 @@ export default {
    *   every 5 min    the SLA sweep. Unchanged, and deliberately not moved to
    *                  the minute schedule: it is the expensive one, and its
    *                  thresholds start at ten minutes.
-   *   Sunday 03:17   the weekly archive.
+   *   Sunday 03:17   the weekly archive. Spelled SUN: Cloudflare numbers
+ *                  this field 1 = Sunday, so "0" is rejected and "7" would
+ *                  mean Saturday.
    *
    * Errors are caught rather than thrown. A failed sweep must not retry in a
    * tight loop, and the next run picks up the same work anyway -- every step

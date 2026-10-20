@@ -19,17 +19,25 @@
   // strings are matched character-for-character against `event.cron` there,
   // so changing one here means changing the literal in src/worker.ts too.
   //
-  // Every minute is the follow-up and survey sweep: the follow-up is due three
-  // minutes after an answer, and a five-minute sweep would deliver it
-  // somewhere between three and eight. Every five is the SLA sweep, the
-  // expensive one, whose thresholds start at ten minutes. Sunday 03:17 UTC is
-  // the weekly archive -- an odd minute rather than the hour, because
-  // schedules on the hour are the most contended.
+  // Every minute is the follow-up and survey sweep: the follow-up is due 30
+  // minutes after the last activity, and a five-minute sweep would smear that
+  // across a five-minute window. Every five is the SLA sweep, the expensive
+  // one, whose thresholds start at ten minutes. Sunday 03:17 UTC is the weekly
+  // archive -- an odd minute rather than the hour, because schedules on the
+  // hour are the most contended.
+  //
+  // The day of the week is spelled SUN, not a number, and that is not a style
+  // preference. Cloudflare numbers this field 1 = Sunday through 7 = Saturday,
+  // which is not what standard crontab means: there 0 = Sunday. So "0" is
+  // rejected outright ("invalid cron string ... [code: 10100]", which is how
+  // this was found -- the Worker uploaded and then the schedules API refused
+  // the expression), and "7" would silently mean Saturday. A name cannot be
+  // misread either way.
   "triggers": {
     "crons": [
       "* * * * *",
       "*/5 * * * *",
-      "17 3 * * 0"
+      "17 3 * * SUN"
     ]
   },
 

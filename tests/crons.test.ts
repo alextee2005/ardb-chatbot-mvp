@@ -60,4 +60,26 @@ describe("cron schedules", () => {
     expect(minute).not.toBe("0");
     expect(Number(hour)).toBeGreaterThanOrEqual(0);
   });
+
+  it("names the day of the week instead of numbering it", () => {
+    // Cloudflare numbers this field 1 = Sunday through 7 = Saturday, which is
+    // not what standard crontab means: there 0 = Sunday. Both ways of getting
+    // it wrong are bad and only one is loud -- "0" is rejected by the
+    // schedules API after the Worker has already uploaded, leaving the code
+    // live and the triggers half-applied, while "7" deploys cleanly and runs
+    // the weekly archive on Saturday.
+    //
+    // A name cannot be misread either way, so every schedule that pins a
+    // weekday must use one. Asserted across wrangler.jsonc, not just the
+    // literal, because the file is the source of truth for what Cloudflare is
+    // actually sent.
+    for (const cron of configuredCrons()) {
+      const dow = cron.split(" ")[4];
+      expect(dow, `day-of-week in "${cron}"`).toBeDefined();
+      if (dow === "*") continue;
+      expect(dow, `"${cron}" should name the weekday, not number it`).toMatch(
+        /^(MON|TUE|WED|THU|FRI|SAT|SUN)(-(MON|TUE|WED|THU|FRI|SAT|SUN))?$/,
+      );
+    }
+  });
 });
