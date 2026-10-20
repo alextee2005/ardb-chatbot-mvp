@@ -327,9 +327,18 @@ satisfaction score against it. The two namespaces have separate parsers that
 each reject the other's payloads, and a test asserts that.
 
 **One Cron Trigger, and the schedule lives in code.** `wrangler.jsonc`
-declares `* * * * *`; `scheduledWork` in `src/core/schedule.ts` decides what
-each minute is for -- engagement every minute, the SLA sweep every fifth, the
-archive on Sunday at 03:17 UTC with a retry at 03:47.
+declares a five-minute trigger; `scheduledWork` in `src/core/schedule.ts`
+decides what each invocation is for -- follow-ups, surveys and the SLA sweep
+every time, plus the archive on Sunday at 03:20 UTC with a retry at 03:50.
+
+Five minutes rather than every minute because the follow-up is due 30 minutes
+after the last activity, so this is already an order of magnitude finer than
+the thing it times. Every minute would be 1,440 invocations a day, each
+querying Postgres -- which on Neon's free tier never lets the compute scale to
+zero and spends the monthly allowance finding nothing to do. The archive
+minutes have to be multiples of five or the trigger never lands on them, and a
+test asserts that against the configured expression, because the symptom would
+be silence rather than an error.
 
 It was three triggers matched against `event.cron`, and that failed twice in
 one afternoon. Cloudflare numbers the day-of-week field 1 = Sunday where

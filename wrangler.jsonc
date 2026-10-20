@@ -15,10 +15,15 @@
   // Chases tickets nobody has answered. Every five minutes is finer than the
   // 10-minute nudge threshold, so a late ticket is caught promptly rather
   // than waiting out a whole extra interval.
-  // One Cron Trigger, every minute. What each minute is actually for is
-  // decided by `scheduledWork` in src/core/schedule.ts: engagement every
-  // minute, the SLA sweep every fifth, the archive on Sunday at 03:17 UTC
-  // with a retry at 03:47.
+  // One Cron Trigger, every five minutes. What each invocation is actually
+  // for is decided by `scheduledWork` in src/core/schedule.ts: follow-ups,
+  // surveys and the SLA sweep every time, plus the archive on Sunday at 03:20
+  // UTC with a retry at 03:50.
+  //
+  // Five minutes, not one: the follow-up is due 30 minutes after the last
+  // activity, so this is already far more precise than the thing it times.
+  // Every minute would be 1,440 invocations a day, each querying Postgres --
+  // which on Neon's free tier never lets the compute scale to zero.
   //
   // One rather than three for two reasons, both learned the hard way. The
   // Workers Free plan allows 5 cron triggers per ACCOUNT, and three did not
@@ -31,7 +36,7 @@
   // `* * * * *` has no syntax left to get wrong, needs no second copy, and
   // leaves four of the account's five slots free.
   "triggers": {
-    "crons": ["* * * * *"]
+    "crons": ["*/5 * * * *"]
   },
 
   // Non-secret configuration. Secrets are set with `wrangler secret put` --

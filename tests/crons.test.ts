@@ -21,7 +21,7 @@ describe("the Cron Trigger configuration", () => {
     // Worker. Three did not fit alongside what this account already had, and
     // the deploy failed after the Worker had uploaded -- leaving the code live
     // with its triggers half-applied. One is both sufficient and frugal.
-    expect(configuredCrons()).toEqual(["* * * * *"]);
+    expect(configuredCrons()).toEqual(["*/5 * * * *"]);
   });
 
   it("pins no weekday in cron syntax at all", () => {
@@ -38,51 +38,63 @@ describe("the Cron Trigger configuration", () => {
 });
 
 describe("scheduledWork", () => {
-  it("sweeps engagement every minute", () => {
-    // The follow-up is due 30 minutes after the last activity and the survey
-    // the moment a conversation closes; both should arrive when they are meant
-    // to rather than up to five minutes late.
-    for (const minute of [0, 1, 7, 29, 30, 59]) {
+  it("sweeps engagement and SLA on every invocation", () => {
+    // Both are due every time now. They were on different cadences when the
+    // follow-up came after three minutes and needed the precision; at thirty
+    // a five-minute sweep is already an order of magnitude finer than the
+    // thing it is timing.
+    for (const minute of [0, 5, 20, 35, 55]) {
       const now = at(`2026-10-20T12:${String(minute).padStart(2, "0")}:00`);
-      expect(scheduledWork(now).engagement).toBe(true);
-    }
-  });
-
-  it("sweeps SLA every fifth minute and no other", () => {
-    expect(scheduledWork(at("2026-10-20T12:00:00")).sla).toBe(true);
-    expect(scheduledWork(at("2026-10-20T12:05:00")).sla).toBe(true);
-    expect(scheduledWork(at("2026-10-20T12:55:00")).sla).toBe(true);
-    for (const minute of [1, 2, 3, 4, 6, 29, 59]) {
-      const now = at(`2026-10-20T12:${String(minute).padStart(2, "0")}:00`);
-      expect(scheduledWork(now).sla, `minute ${minute}`).toBe(false);
+      expect(scheduledWork(now).engagement, `minute ${minute}`).toBe(true);
+      expect(scheduledWork(now).sla, `minute ${minute}`).toBe(true);
     }
   });
 
   describe("the weekly archive", () => {
     // 2026-10-25 is a Sunday; 2026-10-26 is the Monday after it.
-    it("runs on Sunday at 03:17 UTC", () => {
-      expect(at("2026-10-25T03:17:00").getUTCDay()).toBe(0); // the fixture is really a Sunday
-      expect(scheduledWork(at("2026-10-25T03:17:00")).archive).toBe(true);
+    it("runs on Sunday at 03:20 UTC", () => {
+      expect(at("2026-10-25T03:20:00").getUTCDay()).toBe(0); // the fixture is really a Sunday
+      expect(scheduledWork(at("2026-10-25T03:20:00")).archive).toBe(true);
     });
 
-    it("retries at 03:47, so one missed invocation does not skip the week", () => {
+    it("retries at 03:50, so one missed invocation does not skip the week", () => {
       // The archive is idempotent: a second run either finds nothing or
       // continues working through a backlog a batch at a time.
-      expect(scheduledWork(at("2026-10-25T03:47:00")).archive).toBe(true);
+      expect(scheduledWork(at("2026-10-25T03:50:00")).archive).toBe(true);
+    });
+
+    it("lands on minutes the trigger actually fires on", () => {
+      // The guard that matters most here. The trigger is */5, so an archive
+      // minute that is not a multiple of five is never reached -- and the
+      // symptom is silence: no error, no log line, just history tables that
+      // grow for ever.
+      const cron = configuredCrons()[0]!;
+      const step = /^\*\/(\d+)/.exec(cron.split(" ")[0]!);
+      expect(step, `could not read a step from "${cron}"`).not.toBeNull();
+      const every = Number(step![1]);
+
+      let fired = false;
+      for (let minute = 0; minute < 60; minute += every) {
+        if (scheduledWork(at(`2026-10-25T03:${String(minute).padStart(2, "0")}:00`)).archive) {
+          fired = true;
+        }
+      }
+      expect(fired, "no archive minute coincides with a trigger invocation").toBe(true);
     });
 
     it("does not run at other minutes, hours or days", () => {
-      expect(scheduledWork(at("2026-10-25T03:18:00")).archive).toBe(false);
+      expect(scheduledWork(at("2026-10-25T03:25:00")).archive).toBe(false);
       expect(scheduledWork(at("2026-10-25T03:00:00")).archive).toBe(false);
-      expect(scheduledWork(at("2026-10-25T04:17:00")).archive).toBe(false);
-      expect(scheduledWork(at("2026-10-26T03:17:00")).archive).toBe(false);
-      expect(scheduledWork(at("2026-10-24T03:17:00")).archive).toBe(false);
+      expect(scheduledWork(at("2026-10-25T04:20:00")).archive).toBe(false);
+      expect(scheduledWork(at("2026-10-26T03:20:00")).archive).toBe(false);
+      expect(scheduledWork(at("2026-10-24T03:20:00")).archive).toBe(false);
     });
 
     it("runs at most twice a week", () => {
-      // Walk a whole week minute by minute. A clock bug that fired the
-      // archive hourly would be invisible in a spot check and expensive in
-      // production, since each run does real deletes.
+      // Walk a whole week, every minute, not only the ones the trigger fires
+      // on -- a clock bug that fired the archive hourly would be invisible in
+      // a spot check and expensive in production, since each run does real
+      // deletes.
       let fired = 0;
       const start = at("2026-10-19T00:00:00").getTime();
       for (let minute = 0; minute < 7 * 24 * 60; minute += 1) {
@@ -99,15 +111,19 @@ describe("scheduledWork", () => {
     });
   });
 
-  it("can have all three due on the same minute", () => {
-    // 03:15 is a multiple of five; 03:17 is not. The archive minute is
-    // deliberately odd, so in practice the archive coincides with engagement
-    // only -- but the handler runs whatever is due in sequence, so this
-    // documents that overlap is allowed rather than impossible.
-    const sundayArchive = scheduledWork(at("2026-10-25T03:17:00"));
-    expect(sundayArchive).toEqual({ engagement: true, sla: false, archive: true });
-
-    const everyFifth = scheduledWork(at("2026-10-25T03:15:00"));
-    expect(everyFifth).toEqual({ engagement: true, sla: true, archive: false });
+  it("has all three due together on the archive minute", () => {
+    // The handler runs whatever is due in sequence, each guarded, so an
+    // overlap is ordinary rather than special -- but it should be deliberate
+    // and visible here rather than discovered in production.
+    expect(scheduledWork(at("2026-10-25T03:20:00"))).toEqual({
+      engagement: true,
+      sla: true,
+      archive: true,
+    });
+    expect(scheduledWork(at("2026-10-25T03:25:00"))).toEqual({
+      engagement: true,
+      sla: true,
+      archive: false,
+    });
   });
 });
