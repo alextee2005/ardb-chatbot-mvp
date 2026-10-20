@@ -15,30 +15,23 @@
   // Chases tickets nobody has answered. Every five minutes is finer than the
   // 10-minute nudge threshold, so a late ticket is caught promptly rather
   // than waiting out a whole extra interval.
-  // Three schedules, dispatched in `scheduled()` on which one fired. These
-  // strings are matched character-for-character against `event.cron` there,
-  // so changing one here means changing the literal in src/worker.ts too.
+  // One Cron Trigger, every minute. What each minute is actually for is
+  // decided by `scheduledWork` in src/core/schedule.ts: engagement every
+  // minute, the SLA sweep every fifth, the archive on Sunday at 03:17 UTC
+  // with a retry at 03:47.
   //
-  // Every minute is the follow-up and survey sweep: the follow-up is due 30
-  // minutes after the last activity, and a five-minute sweep would smear that
-  // across a five-minute window. Every five is the SLA sweep, the expensive
-  // one, whose thresholds start at ten minutes. Sunday 03:17 UTC is the weekly
-  // archive -- an odd minute rather than the hour, because schedules on the
-  // hour are the most contended.
+  // One rather than three for two reasons, both learned the hard way. The
+  // Workers Free plan allows 5 cron triggers per ACCOUNT, and three did not
+  // fit alongside what this account already had. And matching `event.cron`
+  // against string literals meant the schedule had to be written twice and
+  // kept in step -- in a syntax where Cloudflare numbers the weekday 1 =
+  // Sunday while crontab uses 0, so "17 3 * * 0" was rejected by the
+  // schedules API only after the Worker had already uploaded.
   //
-  // The day of the week is spelled SUN, not a number, and that is not a style
-  // preference. Cloudflare numbers this field 1 = Sunday through 7 = Saturday,
-  // which is not what standard crontab means: there 0 = Sunday. So "0" is
-  // rejected outright ("invalid cron string ... [code: 10100]", which is how
-  // this was found -- the Worker uploaded and then the schedules API refused
-  // the expression), and "7" would silently mean Saturday. A name cannot be
-  // misread either way.
+  // `* * * * *` has no syntax left to get wrong, needs no second copy, and
+  // leaves four of the account's five slots free.
   "triggers": {
-    "crons": [
-      "* * * * *",
-      "*/5 * * * *",
-      "17 3 * * SUN"
-    ]
+    "crons": ["* * * * *"]
   },
 
   // Non-secret configuration. Secrets are set with `wrangler secret put` --

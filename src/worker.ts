@@ -39,6 +39,7 @@ import { draftAndUpdateCard } from "./handlers/drafting.js";
 import { handleCustomerCallback } from "./handlers/customer-callbacks.js";
 import { runEngagementSweep } from "./handlers/engagement.js";
 import { runSlaSweep } from "./handlers/sla.js";
+import { scheduledWork } from "./core/schedule.js";
 import type { TelegramMessage } from "./adapters/telegram.js";
 
 const knowledge = knowledgeJson as KnowledgeBase;
@@ -134,16 +135,6 @@ interface TelegramUpdate {
 
 const WEBHOOK_PATH = "/telegram/webhook";
 
-/**
- * The cron expressions from wrangler.jsonc, as literals.
- *
- * Matched exactly against `event.cron`, so these must stay character-for-
- * character identical to the strings in `triggers.crons`. Anything
- * unrecognized falls through to the engagement sweep rather than being
- * silently dropped.
- */
-const SLA_CRON = "*/5 * * * *";
-const WEEKLY_ARCHIVE_CRON = "17 3 * * SUN";
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -223,23 +214,16 @@ export default {
   },
 
   /**
-   * Cron Triggers: three schedules, dispatched on which one fired.
+   * Cron Trigger: one schedule, every minute, dispatched by the clock.
    *
-   *   every minute   follow-ups and surveys. The follow-up is due three
-   *                  minutes after an answer, so a five-minute sweep would
-   *                  deliver it somewhere between three and eight -- and a
-   *                  question that arrives late reads as though the bot was
-   *                  not paying attention.
-   *   every 5 min    the SLA sweep. Unchanged, and deliberately not moved to
-   *                  the minute schedule: it is the expensive one, and its
-   *                  thresholds start at ten minutes.
-   *   Sunday 03:17   the weekly archive. Spelled SUN: Cloudflare numbers
- *                  this field 1 = Sunday, so "0" is rejected and "7" would
- *                  mean Saturday.
+   * `scheduledWork` decides what this minute is for -- see the comment there
+   * for why one trigger rather than three. All three sweeps can be due on the
+   * same minute and each is independent, so they run in sequence and a
+   * failure in one does not stop the others.
    *
    * Errors are caught rather than thrown. A failed sweep must not retry in a
-   * tight loop, and the next run picks up the same work anyway -- every step
-   * claims in SQL, so a repeat is harmless.
+   * tight loop, and the next run picks up the same work anyway: every step
+   * claims its work in SQL, so a repeat is harmless.
    */
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     let config;
@@ -259,6 +243,7 @@ export default {
 
     const telegram = new TelegramClient(config.telegramToken);
     const store = new Store(config.databaseUrl);
+    const due = scheduledWork(new Date(event.scheduledTime));
 
     /** Run one sweep, logging rather than throwing. */
     const guard = async (name: string, run: () => Promise<void>): Promise<void> => {
@@ -269,7 +254,6 @@ export default {
           JSON.stringify({
             level: "error",
             msg: `${name} failed`,
-            cron: event.cron,
             detail: error instanceof Error ? error.message : String(error),
           }),
         );
@@ -278,36 +262,21 @@ export default {
 
     ctx.waitUntil(
       (async () => {
-        if (event.cron === WEEKLY_ARCHIVE_CRON) {
-          await guard("weekly archive", async () => {
-            const archived = await store.archiveClosedConversations(
-              config.archiveAfterDays,
-              config.archiveBatchSize,
-            );
-            // Purged after archiving, in the same run, so the two halves of
-            // the retention policy cannot drift apart in scheduling.
-            const purged = await store.purgeHistory(
-              config.historyRetentionYears,
-              config.archiveBatchSize,
-            );
-            // Always logged, including a run that moved nothing: this one runs
-            // weekly, so "it did nothing" and "it never ran" need telling
-            // apart, and there is no next run for days.
-            console.log(
-              JSON.stringify({
-                level: "info",
-                msg: "weekly archive",
-                olderThanDays: config.archiveAfterDays,
-                retentionYears: config.historyRetentionYears,
-                archived,
-                purged,
-              }),
-            );
+        if (due.engagement) {
+          await guard("engagement sweep", async () => {
+            const summary = await runEngagementSweep({
+              telegram,
+              store,
+              followupMinutes: config.followupMinutes,
+              idleMinutes: config.conversationIdleMinutes,
+            });
+            if (summary.followupsAsked > 0 || summary.surveysSent > 0) {
+              console.log(JSON.stringify({ level: "info", msg: "engagement sweep", ...summary }));
+            }
           });
-          return;
         }
 
-        if (event.cron === SLA_CRON) {
+        if (due.sla) {
           await guard("SLA sweep", async () => {
             const summary = await runSlaSweep({
               telegram,
@@ -323,24 +292,35 @@ export default {
               console.log(JSON.stringify({ level: "info", msg: "SLA sweep", ...summary }));
             }
           });
-          return;
         }
 
-        // The minute schedule, and the fallback for any cron expression this
-        // code does not recognize -- a schedule added in wrangler.jsonc and
-        // not here should still do the cheap, frequent work rather than
-        // nothing at all.
-        await guard("engagement sweep", async () => {
-          const summary = await runEngagementSweep({
-            telegram,
-            store,
-            followupMinutes: config.followupMinutes,
-            idleMinutes: config.conversationIdleMinutes,
+        if (due.archive) {
+          await guard("weekly archive", async () => {
+            const archived = await store.archiveClosedConversations(
+              config.archiveAfterDays,
+              config.archiveBatchSize,
+            );
+            // Purged in the same run as the archive, so the two halves of the
+            // retention policy cannot drift apart in scheduling.
+            const purged = await store.purgeHistory(
+              config.historyRetentionYears,
+              config.archiveBatchSize,
+            );
+            // Always logged, including a run that moved nothing: this happens
+            // weekly, so "it did nothing" and "it never ran" need telling
+            // apart, and there is no next run for days.
+            console.log(
+              JSON.stringify({
+                level: "info",
+                msg: "weekly archive",
+                olderThanDays: config.archiveAfterDays,
+                retentionYears: config.historyRetentionYears,
+                archived,
+                purged,
+              }),
+            );
           });
-          if (summary.followupsAsked > 0 || summary.surveysSent > 0) {
-            console.log(JSON.stringify({ level: "info", msg: "engagement sweep", ...summary }));
-          }
-        });
+        }
       })(),
     );
   },

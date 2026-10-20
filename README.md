@@ -326,14 +326,26 @@ hand-edited payload would let one customer end another's conversation or file a
 satisfaction score against it. The two namespaces have separate parsers that
 each reject the other's payloads, and a test asserts that.
 
-**Three cron schedules**, dispatched on `event.cron`: every minute for
-follow-ups and surveys, `*/5` for the SLA sweep, and Sunday 03:17 UTC for the
-archive. The minute schedule exists because the follow-up is due at three
-minutes and a five-minute sweep would deliver it somewhere between three and
-eight. The expressions are string literals in `worker.ts` matched against
-`event.cron`, and nothing in the type system ties them to `wrangler.jsonc` --
-so a test reads both files and asserts they agree. Edit one without the other
-and the weekly archive silently becomes an every-minute sweep.
+**One Cron Trigger, and the schedule lives in code.** `wrangler.jsonc`
+declares `* * * * *`; `scheduledWork` in `src/core/schedule.ts` decides what
+each minute is for -- engagement every minute, the SLA sweep every fifth, the
+archive on Sunday at 03:17 UTC with a retry at 03:47.
+
+It was three triggers matched against `event.cron`, and that failed twice in
+one afternoon. Cloudflare numbers the day-of-week field 1 = Sunday where
+crontab uses 0, so `17 3 * * 0` was rejected by the schedules API *after* the
+Worker had uploaded -- and `7`, the obvious correction, would have deployed
+cleanly and run the archive on Saturday. Then the Workers Free plan turned out
+to allow 5 cron triggers per *account*, and three did not fit alongside what
+the account already had.
+
+One trigger has no syntax left to get wrong, needs no second copy kept in step
+with the Worker, and leaves four of the five slots free. The schedule becomes
+a pure function of the clock, which is testable where a cron string was not: a
+test walks a whole week minute by minute and asserts the archive fires exactly
+twice. The retry is there because a single missed invocation would otherwise
+skip the week, and the archive is idempotent -- a second run either finds
+nothing or continues a backlog.
 
 **The weekly archive copies before it deletes, and deletes only what it can
 prove it copied.** Closed conversations older than `ARCHIVE_AFTER_DAYS`
