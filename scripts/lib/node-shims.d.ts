@@ -17,4 +17,5 @@ declare module "node:fs" {
   export function appendFileSync(path: string, data: string): void;
   export function readFileSync(path: string, encoding: "utf8"): string;
   export function existsSync(path: string): boolean;
+  export function readdirSync(path: string): string[];
 }

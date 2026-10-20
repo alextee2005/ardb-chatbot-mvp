@@ -1,0 +1,111 @@
+name: Run migrations
+
+# Applies migrations/*.sql to Neon.
+#
+# Every statement is idempotent (IF NOT EXISTS, DROP ... IF EXISTS, and a
+# DO block that checks before it alters), so running this is safe whatever
+# state the database is in -- and re-running it is how a partly-migrated
+# database is repaired. All files are applied in order, not just the newest:
+# there is no migration ledger, and "apply everything, idempotently" is both
+# simpler and more robust than tracking which ones have run.
+#
+# Required repository secret:
+#   DATABASE_URL_DIRECT   the DIRECT Neon connection string (no "-pooler").
+#                         Migrations take DDL locks and a pooled connection
+#                         can hand successive statements to different
+#                         sessions. Falls back to DATABASE_URL with a warning
+#                         if the direct one is not set.
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "List the statements without applying them"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  # Never two migrations at once: concurrent DDL on the same tables deadlocks.
+  group: migrate
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    name: Apply migrations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+
+      - run: npm ci
+
+      - name: Check the statements parse
+        # Before touching the database. The runner's previous version split
+        # SQL with a regex and silently dropped every statement that had a
+        # comment above it -- 21 of them, including CREATE TABLE tickets --
+        # while still reporting a count and exiting 0. These tests are what
+        # stop that shape of failure recurring, so they gate the apply.
+        run: npx vitest run tests/sql-statements.test.ts
+
+      - name: List the statements
+        run: |
+          set -euo pipefail
+          node -e '
+            import("./scripts/sql-statements.mjs").then(async (m) => {
+              const fs = await import("node:fs/promises");
+              const files = (await fs.readdir("migrations")).filter(f => f.endsWith(".sql")).sort();
+              let total = 0;
+              for (const f of files) {
+                const statements = m.splitStatements(await fs.readFile("migrations/" + f, "utf8"));
+                console.log(`${f}: ${statements.length} statements`);
+                for (const s of statements) console.log("    " + s.split("\n")[0].slice(0, 110));
+                total += statements.length;
+              }
+              console.log(`\n${total} statements across ${files.length} files.`);
+            });
+          '
+
+      - name: Apply
+        if: ${{ inputs.dry_run == false }}
+        env:
+          DIRECT: ${{ secrets.DATABASE_URL_DIRECT }}
+          POOLED: ${{ secrets.DATABASE_URL }}
+        run: |
+          set -euo pipefail
+
+          if [ -n "${DIRECT:-}" ]; then
+            export DATABASE_URL="${DIRECT}"
+          elif [ -n "${POOLED:-}" ]; then
+            echo "::warning::DATABASE_URL_DIRECT is not set, falling back to DATABASE_URL. If that is the -pooler endpoint, add the direct connection string as DATABASE_URL_DIRECT."
+            export DATABASE_URL="${POOLED}"
+          else
+            echo "::error::Neither DATABASE_URL_DIRECT nor DATABASE_URL is set. Add one under Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+
+          npm run migrate
+
+      - name: Summary
+        if: always()
+        env:
+          APPLIED: ${{ inputs.dry_run == false }}
+          OUTCOME: ${{ job.status }}
+        run: |
+          {
+            echo "## Migrations: ${OUTCOME}"
+            echo
+            if [ "${APPLIED}" = "true" ]; then
+              echo "Statements were applied to Neon. Every migration is idempotent, so"
+              echo "re-running this workflow is safe and is how a partly-migrated"
+              echo "database is repaired."
+            else
+              echo "Dry run: the statements above were listed, and **nothing was applied**."
+              echo "Re-run with \`dry_run\` unchecked to apply them."
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
