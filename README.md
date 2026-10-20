@@ -172,6 +172,11 @@ npm run set-webhook
 Check it with `curl https://<worker>/health`, which reports the loaded
 knowledge-base version and whether it is still the placeholder.
 
+`/health?schema=1` additionally reports any expected table or column the
+database is missing, so "is the schema up to date?" is one request rather
+than an inference. It needs `DATABASE_URL`; plain `/health` deliberately
+does not, so it still answers on a Worker with no secrets set at all.
+
 ## Architecture
 
 ```
