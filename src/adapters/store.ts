@@ -110,6 +110,58 @@ export class Store {
     return rows.length > 0;
   }
 
+  /**
+   * Which expected tables and columns the database actually has.
+   *
+   * Exists because a missing migration is invisible until the feature that
+   * needs it runs. A broken migration runner applied almost nothing here for
+   * weeks and nothing reported it: the bot kept answering questions, because
+   * the tables it needed for *that* happened to exist. /health now says so
+   * directly, so "is the schema up to date?" is one request rather than a
+   * guess.
+   *
+   * Checked by name against the catalog rather than by querying each table,
+   * so it costs one round trip and cannot itself fail on the thing it is
+   * reporting.
+   */
+  async schemaStatus(): Promise<{ missing: string[]; ok: boolean }> {
+    const expected: Array<[string, string | null]> = [
+      ["tickets", null],
+      ["ticket_events", null],
+      ["processed_updates", null],
+      ["tickets", "nudge_count"],
+      ["conversations", null],
+      ["tickets", "conversation_id"],
+      ["conversations", "followup_sent_at"],
+      ["conversations", "survey_sent_at"],
+      ["conversation_surveys", null],
+      ["conversations_history", null],
+      ["tickets_history", null],
+      ["ticket_events_history", null],
+    ];
+
+    const rows = await this.sql`
+      SELECT table_name, column_name FROM information_schema.columns
+      WHERE table_schema = 'public'
+    `;
+
+    const tables = new Set<string>();
+    const columns = new Set<string>();
+    for (const row of rows) {
+      const r = row as Row;
+      tables.add(String(r.table_name));
+      columns.add(`${String(r.table_name)}.${String(r.column_name)}`);
+    }
+
+    const missing = expected
+      .filter(([table, column]) =>
+        column === null ? !tables.has(table) : !columns.has(`${table}.${column}`),
+      )
+      .map(([table, column]) => (column === null ? table : `${table}.${column}`));
+
+    return { missing, ok: missing.length === 0 };
+  }
+
   /** Keeps the dedupe table from growing without bound. */
   async pruneProcessedUpdates(): Promise<void> {
     await this.sql`

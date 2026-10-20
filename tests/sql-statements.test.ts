@@ -126,3 +126,28 @@ describe("this repo's migrations", () => {
     expect(inStatements).toBe(inFiles);
   });
 });
+
+describe("the /health schema check", () => {
+  it("names every table the migrations create", () => {
+    // Keeps Store.schemaStatus honest. Its expected-objects list is
+    // hand-written, so without this it would quietly fall behind the next
+    // migration -- and a staleness check that is itself stale reports
+    // healthy while the schema is missing a table.
+    const created = new Set<string>();
+    for (const file of readdirSync("migrations").filter((f) => f.endsWith(".sql"))) {
+      const sql = readFileSync(`migrations/${file}`, "utf8");
+      for (const match of sql.matchAll(/^CREATE TABLE(?: IF NOT EXISTS)? (\w+)/gm)) {
+        created.add(match[1]!);
+      }
+    }
+
+    const store = readFileSync("src/adapters/store.ts", "utf8");
+    const checked = new Set(
+      [...store.matchAll(/\["(\w+)", (?:null|"(\w+)")\]/g)].map((m) => m[1]!),
+    );
+
+    expect(created.size).toBeGreaterThan(0);
+    const unchecked = [...created].filter((table) => !checked.has(table));
+    expect(unchecked, "tables created by a migration but absent from schemaStatus").toEqual([]);
+  });
+});

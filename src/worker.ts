@@ -150,8 +150,20 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === "/health") {
+      // Optional and opt-in via ?schema=1, because it needs DATABASE_URL and
+      // /health must keep answering on a Worker with no secrets set at all.
+      let schema: { ok: boolean; missing: string[] } | { error: string } | undefined;
+      if (url.searchParams.get("schema") === "1" && env.DATABASE_URL?.trim()) {
+        try {
+          schema = await new Store(env.DATABASE_URL).schemaStatus();
+        } catch (error) {
+          schema = { error: error instanceof Error ? error.message : String(error) };
+        }
+      }
+
       return Response.json({
         ok: true,
+        ...(schema ? { schema } : {}),
         knowledgeVersion: knowledge.version,
         knowledgeEntries: knowledge.entries.length,
         knowledgePlaceholder: isPlaceholder(knowledge),
