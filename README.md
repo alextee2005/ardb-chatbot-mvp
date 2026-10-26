@@ -255,6 +255,28 @@ half with no error to show for it. The conflict path doubles as the "another
 question in the same conversation" path, so the common case and the race
 resolve through the same branch.
 
+**A draft that never arrives is given up on.** A ticket only leaves
+`drafting` when the drafting step comes back, so a provider that never runs
+leaves it there for ever -- and the card keeps saying "Claude is drafting a
+response…" about something that is not coming. That happened: a deleted
+`GITHUB_REPOSITORY` silently resolved the provider to `none` for six days.
+The SLA nudges fired throughout and the customer got the 45-minute warning,
+but every nudge pointed at a card with no buttons on it.
+
+After `SLA_DRAFT_TIMEOUT_MINUTES` (default 5) the sweep moves the ticket to
+`awaiting` and writes the reason where a suggested answer would be, so the
+card gains Edit and Reject and the question is answerable by hand. Two
+details make it work rather than merely exist: the timeout is evaluated
+*before* the nudge in the same pass, so a nudge points at an actionable card;
+and it is deliberately below `SLA_NUDGE_AFTER_MINUTES`, which also means the
+candidate query has to use it as the earliest threshold -- it is the shortest
+of the three, and leaving it out of that `Math.min` made the timeout fire at
+10 minutes instead of 5. A test reads the handler and asserts the query
+covers every threshold in the policy.
+
+`AND status = 'drafting'` in the UPDATE is the claim, so a draft landing in
+the same moment wins and two sweeps cannot both time out one ticket.
+
 **An interaction ends by asking, not by guessing.** Thirty quiet minutes after
 the last activity (`FOLLOWUP_MINUTES`) the bot asks "is there anything else
 that we can help you with?" with two buttons. **No** closes the conversation

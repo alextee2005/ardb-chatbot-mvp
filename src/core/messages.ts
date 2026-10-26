@@ -117,6 +117,16 @@ export const CUSTOMER_MESSAGES = {
 } as const;
 
 export const MODERATOR_MESSAGES = {
+  /**
+   * Shown on the card where a suggested answer would be, once the draft has
+   * been given up on. Says what happened and what to do, because the
+   * moderator reading it has no other way to find out.
+   */
+  draftTimedOut: (minutes: number) =>
+    `No suggested answer arrived within ${minutes} minutes, so there will not be one. ` +
+    "This question is yours to answer: tap Edit and write the reply, or Reject to " +
+    "send the customer to a branch.",
+
   claimedByOther: "Already being handled by another moderator.",
   notFound: "That ticket no longer exists.",
   alreadyResolved: "That ticket has already been answered.",

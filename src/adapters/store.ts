@@ -536,6 +536,31 @@ export class Store {
     return rows.length > 0 ? toTicket(rows[0] as Row) : null;
   }
 
+  /**
+   * Give up on a draft that never arrived.
+   *
+   * Moves the ticket out of `drafting` so the card gains Edit and Reject and
+   * the question becomes answerable by hand. `AND status = 'drafting'` is the
+   * claim: a draft that lands in the same moment wins, and two sweeps cannot
+   * both time out the same ticket.
+   *
+   * The reason goes in `draft_error`, which the card renders where a
+   * suggested answer would be -- so a moderator reads why there isn't one
+   * instead of "Claude is drafting a response…" about something that is not
+   * coming.
+   */
+  async timeOutDraft(id: number, reason: string): Promise<Ticket | null> {
+    const rows = await this.sql`
+      UPDATE tickets
+      SET status = 'awaiting',
+          draft_error = ${reason},
+          updated_at = now()
+      WHERE id = ${id} AND status = 'drafting'
+      RETURNING *
+    `;
+    return rows.length > 0 ? toTicket(rows[0] as Row) : null;
+  }
+
   async setCardMessageId(id: number, cardMessageId: number): Promise<void> {
     await this.sql`
       UPDATE tickets

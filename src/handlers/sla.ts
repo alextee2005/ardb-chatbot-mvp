@@ -9,6 +9,7 @@
 import type { Store } from "../adapters/store.js";
 import type { TelegramClient } from "../adapters/telegram.js";
 import { CUSTOMER_MESSAGES, MODERATOR_MESSAGES } from "../core/messages.js";
+import { refreshCard } from "./card.js";
 import {
   decideSlaActions,
   formatWaiting,
@@ -36,6 +37,8 @@ export interface SweepSummary {
   examined: number;
   nudged: number;
   warned: number;
+  /** Drafts given up on, so the card became answerable by hand. */
+  draftsTimedOut: number;
   /** Interactions recorded as ended because the customer went quiet. */
   conversationsClosed: number;
 }
@@ -44,10 +47,16 @@ export async function runSlaSweep(
   ctx: SlaContext,
   now: Date = new Date(),
 ): Promise<SweepSummary> {
-  // The earlier of the two thresholds decides who is even a candidate.
+  // The earliest of the thresholds decides who is even a candidate, and the
+  // draft timeout has to be in here: it is the shortest of the three on the
+  // default policy (5 minutes against 10 and 45), so leaving it out would
+  // keep a stuck ticket out of the candidate list until the nudge threshold
+  // and quietly make the timeout fire at 10 minutes rather than 5. A test
+  // asserts this covers the whole policy.
   const earliestThreshold = Math.min(
     ctx.policy.nudgeAfterMinutes,
     ctx.policy.warnCustomerAfterMinutes,
+    ctx.policy.draftTimeoutMinutes,
   );
 
   const candidates = await ctx.store.findOpenTickets(
@@ -59,12 +68,46 @@ export async function runSlaSweep(
     examined: candidates.length,
     nudged: 0,
     warned: 0,
+    draftsTimedOut: 0,
     conversationsClosed: 0,
   };
 
   for (const ticket of candidates) {
     const actions = decideSlaActions(ticket, now, ctx.policy);
     const waiting = formatWaiting(ticket, now);
+
+    // Before the nudge, deliberately: this is what puts Edit and Reject on
+    // the card, so a nudge decided in the same pass points at a card a
+    // moderator can act on rather than one that says a draft is coming.
+    //
+    // The branches below read only the id, the card, the customer chat and
+    // the creation time, none of which this changes, so they keep using
+    // `ticket` rather than the returned row.
+    if (actions.includes("time_out_draft")) {
+      const timedOut = await ctx.store.timeOutDraft(
+        ticket.id,
+        MODERATOR_MESSAGES.draftTimedOut(ctx.policy.draftTimeoutMinutes),
+      );
+      // Null means a draft landed in the same moment, or another sweep got
+      // there first. Either way there is nothing to announce.
+      if (timedOut) {
+        await refreshCard(ctx, timedOut);
+        await ctx.store.recordEvent({
+          ticketId: timedOut.id,
+          event: "draft_timed_out",
+          detail: `no draft after ${ctx.policy.draftTimeoutMinutes} min`,
+        });
+        console.warn(
+          JSON.stringify({
+            level: "warn",
+            msg: "draft timed out",
+            ticketId: timedOut.id,
+            afterMinutes: ctx.policy.draftTimeoutMinutes,
+          }),
+        );
+        summary.draftsTimedOut += 1;
+      }
+    }
 
     if (actions.includes("nudge_moderators")) {
       // Claim the nudge first. If another sweep got there, skip the message

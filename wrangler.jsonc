@@ -128,6 +128,13 @@
     "SLA_NUDGE_AFTER_MINUTES": "10",
     "SLA_NUDGE_REPEAT_MINUTES": "30",
     "SLA_MAX_NUDGES": "3",
-    "SLA_WARN_CUSTOMER_AFTER_MINUTES": "45"
+    "SLA_WARN_CUSTOMER_AFTER_MINUTES": "45",
+
+    // How long a ticket may sit in "drafting" before the draft is given up on
+    // and the card is rewritten with Edit and Reject. Ten times the slowest
+    // legitimate route (the GitHub one boots a runner first) and below
+    // SLA_NUDGE_AFTER_MINUTES on purpose, so a card is actionable before
+    // anyone is nudged to go and look at it.
+    "SLA_DRAFT_TIMEOUT_MINUTES": "5"
   }
 }

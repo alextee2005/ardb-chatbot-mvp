@@ -184,3 +184,42 @@ describe("the conversation banner", () => {
     expect(text).not.toContain("<code>C");
   });
 });
+
+describe("a card whose draft was given up on", () => {
+  // What the SLA timeout leaves behind: status awaiting, no draft, and a
+  // draft_error explaining why. The whole point of the timeout is that this
+  // card is actionable, so that is what gets asserted.
+  const timedOut = () =>
+    ticket({
+      status: "awaiting",
+      draft: null,
+      draftError:
+        "No suggested answer arrived within 5 minutes, so there will not be one. " +
+        "This question is yours to answer: tap Edit and write the reply, or Reject to " +
+        "send the customer to a branch.",
+    });
+
+  it("stops claiming a draft is on its way", () => {
+    // The symptom this feature exists to kill. A card stuck on this line told
+    // moderators to wait for something that was never coming.
+    const text = renderCard(timedOut());
+    expect(text).not.toContain("Claude is drafting a response");
+    expect(text).toContain("No suggested answer arrived within 5 minutes");
+  });
+
+  it("offers Edit and Reject, but not Send as-is", () => {
+    // Edit and Reject are what make the question answerable. Send as-is must
+    // be absent: there is no draft to send, and a one-tap button next to an
+    // empty answer is how an empty reply reaches a customer.
+    const keyboard = renderKeyboard(timedOut());
+    const labels = keyboard?.inline_keyboard[0]?.map((b) => b.text) ?? [];
+    expect(labels.some((l) => l.includes("Edit"))).toBe(true);
+    expect(labels.some((l) => l.includes("Reject"))).toBe(true);
+    expect(labels.some((l) => l.includes("Send as-is"))).toBe(false);
+  });
+
+  it("still shows the customer's question", () => {
+    // A moderator answering by hand needs the question more than ever.
+    expect(renderCard(timedOut())).toContain("What documents do I need?");
+  });
+});

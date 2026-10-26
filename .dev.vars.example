@@ -89,3 +89,11 @@ DATABASE_URL=
 # SLA_NUDGE_REPEAT_MINUTES=30
 # SLA_MAX_NUDGES=3
 # SLA_WARN_CUSTOMER_AFTER_MINUTES=45
+
+# Optional. How long a ticket may sit in "drafting" before the draft is given
+# up on and the moderator card is rewritten with Edit and Reject. Default 5.
+# A ticket only leaves "drafting" when the drafting step comes back, so
+# without this a provider that never runs leaves the card saying "Claude is
+# drafting a response…" for ever. Keep it below SLA_NUDGE_AFTER_MINUTES so a
+# card is actionable before anyone is nudged to look at it.
+# SLA_DRAFT_TIMEOUT_MINUTES=5

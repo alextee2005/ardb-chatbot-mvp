@@ -60,6 +60,7 @@ export interface Env {
   SLA_NUDGE_REPEAT_MINUTES?: string;
   SLA_MAX_NUDGES?: string;
   SLA_WARN_CUSTOMER_AFTER_MINUTES?: string;
+  SLA_DRAFT_TIMEOUT_MINUTES?: string;
 }
 
 export interface Config {
@@ -182,6 +183,10 @@ export function loadConfig(env: Env): Config {
     warnCustomerAfterMinutes: positiveInt(
       env.SLA_WARN_CUSTOMER_AFTER_MINUTES,
       DEFAULT_SLA_POLICY.warnCustomerAfterMinutes,
+    ),
+    draftTimeoutMinutes: positiveInt(
+      env.SLA_DRAFT_TIMEOUT_MINUTES,
+      DEFAULT_SLA_POLICY.draftTimeoutMinutes,
     ),
   };
 

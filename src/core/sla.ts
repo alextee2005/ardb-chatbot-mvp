@@ -21,6 +21,20 @@ export interface SlaPolicy {
   maxNudges: number;
   /** Silence before the customer is told it is taking longer than usual. */
   warnCustomerAfterMinutes: number;
+  /**
+   * How long a ticket may sit in `drafting` before the draft is given up on.
+   *
+   * A ticket only leaves `drafting` when the drafting step comes back. If that
+   * step never runs -- a misconfigured provider, a dispatch that went nowhere,
+   * a runner that died -- the ticket stays there for ever, and the moderator
+   * card keeps saying "Claude is drafting a response…" about something that is
+   * not coming. The nudges still fire, but they point at a card with no
+   * buttons on it, which tells a moderator to keep waiting.
+   *
+   * Past this, the ticket is moved to `awaiting` and the card is rewritten
+   * with Edit and Reject, so the question becomes answerable by hand.
+   */
+  draftTimeoutMinutes: number;
 }
 
 export const DEFAULT_SLA_POLICY: SlaPolicy = {
@@ -28,9 +42,14 @@ export const DEFAULT_SLA_POLICY: SlaPolicy = {
   nudgeRepeatMinutes: 30,
   maxNudges: 3,
   warnCustomerAfterMinutes: 45,
+  // Ten times the time the slowest route legitimately takes -- the GitHub
+  // route has to boot a runner and install the CLI, which is 30 to 60
+  // seconds -- and deliberately below nudgeAfterMinutes, so the card is
+  // already actionable by the time anyone is pinged about it.
+  draftTimeoutMinutes: 5,
 };
 
-export type SlaAction = "nudge_moderators" | "warn_customer";
+export type SlaAction = "nudge_moderators" | "warn_customer" | "time_out_draft";
 
 /** Fields the decision depends on -- a subset, so tests need not build a full ticket. */
 export type SlaTicket = Pick<
@@ -52,6 +71,14 @@ export function decideSlaActions(
 
   const actions: SlaAction[] = [];
   const ageMinutes = minutesBetween(now, ticket.createdAt);
+
+  // First, because the other two are about a ticket nobody has answered and
+  // this is about one nobody *can* answer. Giving up on the draft turns a
+  // card with no buttons into one with Edit and Reject, so a nudge decided in
+  // the same pass points at something a moderator can act on.
+  if (ticket.status === "drafting" && ageMinutes >= policy.draftTimeoutMinutes) {
+    actions.push("time_out_draft");
+  }
 
   if (shouldNudge(ticket, now, policy, ageMinutes)) {
     actions.push("nudge_moderators");
