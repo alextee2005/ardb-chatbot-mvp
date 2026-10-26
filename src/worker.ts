@@ -133,6 +133,21 @@ interface TelegramUpdate {
   callback_query?: CallbackQuery;
 }
 
+/**
+ * The drafting provider actually in effect, for /health.
+ *
+ * Deliberately tolerant: /health must answer on a Worker with no secrets set
+ * at all, which is most of its value when something is misconfigured. So a
+ * configuration error is reported as a string rather than thrown.
+ */
+function effectiveProvider(env: Env): string {
+  try {
+    return loadConfig(env).draftProvider;
+  } catch (error) {
+    return `unavailable: ${error instanceof ConfigError ? error.message : String(error)}`;
+  }
+}
+
 const WEBHOOK_PATH = "/telegram/webhook";
 
 
@@ -159,16 +174,25 @@ export default {
         knowledgeEntries: knowledge.entries.length,
         knowledgePlaceholder: isPlaceholder(knowledge),
         // Whether questions get a suggested answer, or go to the group for a
-        // moderator to write. Reported because the symptom of a missing key
-        // is subtle -- cards arrive, just without drafts.
-        // Reported because the symptom of a drafting misconfiguration is
-        // subtle: cards still arrive, just without suggested answers. Read
-        // from env rather than loadConfig so /health answers on a Worker with
-        // no secrets set at all.
+        // moderator to write.
+        //
+        // `configured` is what the Worker was asked for; `effective` is what
+        // loadConfig resolved it to. They differ whenever a provider cannot
+        // run, and that gap is the whole reason this is reported: a
+        // half-configured provider degrades to "none" by design, so the
+        // webhook keeps working and the bot quietly stops drafting.
+        //
+        // Reporting only `configured` made this endpoint lie. A deleted
+        // GITHUB_REPOSITORY left the github route resolving to "none" for six
+        // days while /health kept answering "github", because it read the raw
+        // env var. Whoever checks this endpoint is checking it precisely when
+        // something is wrong, so the two values have to be side by side.
         drafting: {
-          provider: env.DRAFT_PROVIDER ?? "workers-ai",
+          configured: env.DRAFT_PROVIDER ?? "workers-ai",
+          effective: effectiveProvider(env),
           claudeKey: Boolean(env.ANTHROPIC_API_KEY?.trim()),
           workersAi: Boolean(env.AI),
+          dispatchRepository: env.GITHUB_REPOSITORY ?? null,
         },
       });
     }

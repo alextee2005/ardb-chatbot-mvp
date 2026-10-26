@@ -44,14 +44,48 @@
   // MODERATOR_CHAT_ID or TELEGRAM_WEBHOOK_SECRET here.
   "vars": {
     // Sonnet 5.5 for drafting. Every draft is read and approved by a
-    // moderator before a customer sees it, which is the safety net that
-    // makes a non-frontier model acceptable here.
+    // moderator before a customer sees it, which is the safety net that makes
+    // a non-frontier model acceptable here.
     //
-    // On the "github" route this is passed to the Claude Code CLI, which
-    // authenticates with a Claude subscription rather than per-token
-    // billing -- so the cost of moving up from Haiku is subscription
-    // budget, not a bill. Override as a repository variable named
-    // CLAUDE_MODEL to change it without touching code.
+    // On the "github" route this is handed to the Claude Code CLI, which
+    // authenticates with a Claude subscription rather than per-token billing,
+    // so moving up a tier spends subscription budget rather than money.
+    // Override with a CLAUDE_MODEL repository variable to change it without
+    // touching code.
+    // Who writes the suggested answer: "workers-ai", "claude", or "none" for
+    // a moderator-written reply every time. A provider that cannot run --
+    // "claude" with no API key -- degrades to "none" rather than failing the
+    // webhook, and /health reports which one is actually in effect.
+    // The committed default needs no credential, so a fresh clone always
+    // deploys. The "github" route needs a dispatch token, and a default that
+    // demands a secret nobody has created yet turns a working deployment into
+    // an undeployable one -- which is exactly what it did. Choose the route
+    // per deploy with the draft_provider input on the Deploy workflow.
+    "DRAFT_PROVIDER": "workers-ai",
+
+    // Only for DRAFT_PROVIDER "github": which repository receives the
+    // dispatch. No default -- guessing a repository name would send a ticket
+    // ID to someone else's workflow. The token goes in a Worker secret
+    // (GITHUB_DISPATCH_TOKEN); this is just the address.
+    "GITHUB_REPOSITORY": "alextee2005/ardb-chatbot-mvp",
+
+    // Confirmed 128,000-token context window, which is the binding
+    // constraint: the whole corpus (~20,000 tokens) is sent with every
+    // question and Workers AI has no prompt cache to put it behind. Works out
+    // at roughly 440 neurons a question, so about 22 free questions a day.
+    //
+    // gpt-oss answers in OpenAI's chat-completions or responses shape, not
+    // the plain {response} of the text-generation models, and it reasons on
+    // every request from the same output budget as the answer. The adapter
+    // reads all three shapes and turns its effort down; a model family in a
+    // fourth shape would report "no text in any shape this adapter reads"
+    // along with the keys it did get.
+    //
+    // @cf/meta/llama-3.1-8b-instruct-fp8-fast is far cheaper per input token
+    // (~123 neurons a question, ~80 a day) but Cloudflare documents only
+    // 32,000 tokens for its non-fast sibling, which leaves little headroom
+    // over the corpus. Check the model's page before switching.
+    "WORKERS_AI_MODEL": "@cf/openai/gpt-oss-20b",
 
     "CLAUDE_MODEL": "claude-sonnet-5-5",
     "CLAUDE_EFFORT": "low",
